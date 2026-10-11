@@ -46,6 +46,7 @@
     drawTodo();
     focusSubject.value = opts.focusSubject || '';
     focusMins.value = opts.focusMins || 25;
+    markPreset();
     drawFocus();
     drawWeek();
   }
@@ -110,10 +111,13 @@
     $('focusStop').textContent = left <= 0 ? 'Done' : 'Stop and log';
   }
 
+  // the preset that matches the minutes box is shown as chosen
+  const markPreset = () => focusSet.querySelectorAll('[data-mins]').forEach(b => b.classList.toggle('selected', b.dataset.mins === String(+focusMins.value)));
   focusSet.addEventListener('click', (e) => {
     const b = e.target.closest('[data-mins]');
-    if (b) focusMins.value = b.dataset.mins;
+    if (b) { focusMins.value = b.dataset.mins; markPreset(); }
   });
+  focusMins.addEventListener('input', markPreset);
 
   focusSet.addEventListener('submit', (e) => {
     e.preventDefault();

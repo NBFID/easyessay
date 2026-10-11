@@ -397,11 +397,14 @@
 
   // How wide a highlight of `words` words is, from the words as rendered: the average word box
   // plus a space, times the count. Returns { rx, ry } half-axes, ry being most of a line.
-  function ringFor(sentences, words = 6) {
+  // The height is most of a line (from the panel's line height when given), so the ellipse covers
+  // the line being read and not the ones above and below.
+  function ringFor(sentences, words = 6, panel = null) {
     let w = 0, n = 0, h = 0;
     for (const sn of sentences) for (const el of sn.wordEls || []) { const b = el.getBoundingClientRect(); if (!b.width) continue; w += b.width; h += b.height; n++; if (n >= 80) break; }
-    const avgW = n ? w / n : 50, avgH = n ? h / n : 24;
-    return { rx: (avgW + avgH * 0.3) * words / 2, ry: avgH * 0.85 };
+    const avgW = n ? w / n : 50, avgH = n ? h / n : 20;
+    const lineH = panel ? parseFloat(getComputedStyle(panel).lineHeight) : 0;
+    return { rx: (avgW + avgH * 0.3) * words / 2, ry: (lineH > 0 ? lineH : avgH * 1.4) * 0.75 };
   }
 
   /* ---- marking by hand ---- */

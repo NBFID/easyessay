@@ -76,11 +76,13 @@
 
   /* ---- the pages and the tabs between them ---- */
   #nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 4px 0 22px; }
-  #nav .brand { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
-  #nav .tabs { display: flex; gap: 2px; flex: 1; }
-  #nav a { padding: 6px 12px; border-radius: 8px; font-size: 14px; color: var(--muted); text-decoration: none; }
-  #nav a:hover { background: var(--soft); color: var(--ink); }
-  #nav a.on { background: var(--soft); color: var(--ink); font-weight: 600; }
+  #nav .brand { display: inline-flex; align-items: center; gap: 8px; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
+  #nav .brand img { width: 22px; height: 22px; border-radius: 6px; }
+  /* the tabs sit in one pill, the open one lifted onto paper */
+  #nav .tabs { display: inline-flex; gap: 2px; padding: 3px; margin-right: auto; background: var(--soft); border-radius: 10px; }
+  #nav a { padding: 5px 12px; border-radius: 8px; font-size: 14px; color: var(--muted); text-decoration: none; }
+  #nav a:hover { color: var(--ink); }
+  #nav a.on { background: var(--paper); color: var(--ink); font-weight: 600; box-shadow: var(--shadow); }
   #focusChip { font-variant-numeric: tabular-nums; }
   @media (max-width: 700px) {
     #nav .brand { flex: 1; }
@@ -126,8 +128,8 @@
   }
   .btn:hover:not(:disabled) { background: var(--soft); }
   .btn:disabled { opacity: 0.4; cursor: default; }
-  .btn.primary { background: var(--ink); border-color: var(--ink); color: var(--paper); }
-  .btn.primary:hover:not(:disabled) { background: var(--ink); opacity: 0.85; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(0.92); }
   .btn.quiet { border-color: transparent; background: transparent; padding-left: 6px; padding-right: 8px; }
 
   /* buttons that belong together sit joined in one pill */
@@ -256,12 +258,16 @@
     top: 0;
     z-index: 4;
     background: var(--bg);
-    margin: 0 0 12px;
-    padding: 10px 0;
+    margin: 0 0 10px;
+    padding: 8px 0;
     border-bottom: 1px solid var(--line);
     display: grid;
-    gap: 10px;
+    gap: 8px;
   }
+  #bankBox > summary { cursor: pointer; }
+  #bankBox > summary .muted { margin-left: 6px; }
+  #bankBox .lead { margin-top: 10px; }
+  #bankBox details.card { box-shadow: none; }
   /* on a phone the toolbar is too tall to pin over the essay */
   @media (max-width: 700px) {
     #controls { position: static; }
@@ -615,7 +621,7 @@
 <div class="wrap">
 
 <nav id="nav" hidden>
-  <span class="brand">EasyEssay</span>
+  <span class="brand"><img src="icon-192.png" alt="" width="22" height="22">EasyEssay</span>
   <span class="tabs">
     <a href="#today">Today</a>
     <a href="#essays">Essays</a>
@@ -736,9 +742,6 @@
     <button class="btn primary" id="examSave">Add exam</button>
     <button type="button" class="btn" id="examCancel" hidden>Cancel</button>
   </form>
-  <h2>English question bank</h2>
-  <p class="lead">Every essay question from the 2019–2025 HSC papers and recent trials, by module. Open an essay and use "Adapt to a question" to pull a module's questions in.</p>
-  <div id="bankList"></div>
   <h2>Past papers</h2>
   <div id="paperList"></div>
   <form id="paperForm" class="card fields">
@@ -749,6 +752,12 @@
     <input type="number" id="paperOutOf" placeholder="100" min="1" step="any" required>
     <button class="btn primary">Log paper</button>
   </form>
+  <h2>English</h2>
+  <details id="bankBox" class="card">
+    <summary><b>Question bank</b> <span class="muted">every essay question from the 2019–2025 HSC papers and recent trials, by module</span></summary>
+    <p class="lead">Open an essay and use "Adapt to a question" to pull a module's questions in, or copy them from here.</p>
+    <div id="bankList"></div>
+  </details>
 </div>
 
 <div id="work" class="page" data-view="essay" hidden>
@@ -767,6 +776,7 @@
             <button class="item" data-mode="blank">Blank page<small>Write it from memory, then check it</small></button>
             <button class="item" data-mode="gaze">Writeout with eye tracking<small>The essay beside the page; the camera logs what you look up</small></button>
             <button class="item" data-mode="exam">Exam run<small>A question, the clock and a blank page</small></button>
+            <button class="item" id="timerBtn"><span>Timed write</span><small>The clock on while you hide and recall; minutes under Options</small></button>
             <div class="head">Drills</div>
             <button class="item" data-mode="skeleton">Skeleton<small>Only the first words of each sentence show</small></button>
             <button class="item" data-mode="openers">Sentence openers<small>Hide the first words of each sentence</small></button>
@@ -782,6 +792,9 @@
             <button class="item" data-mode="recite">Recite aloud<small>Words appear as you say them</small></button>
             <div class="head">Adapt</div>
             <button class="item" data-mode="adapt">Adapt to a question<small>Rework your thesis and topic sentences</small></button>
+            <div class="head">Export</div>
+            <button class="item" id="quoteCardsBtn">Quotes to cards<small>A deck of your quotes to drill in Cards</small></button>
+            <button class="item" id="ankiBtn">Quotes to Anki<small>A cloze file to import there</small></button>
           </div>
         </details>
         <details id="options" class="menu">
@@ -797,13 +810,6 @@
             <label><input type="checkbox" data-opt="typing"> Type each word to check it</label>
             <label><input type="checkbox" data-opt="syn"> Accept close synonyms</label>
             <label><input type="checkbox" data-opt="keyOnly"> Little words fill themselves in</label>
-            <div class="head">Eye tracking</div>
-            <label><input type="checkbox" data-opt="gazeBlur"> Blur the reference except where you look</label>
-            <label><input type="checkbox" data-opt="gazeDot"> Show the raw gaze dot</label>
-            <label><input type="checkbox" data-opt="gazeSound"> Soft tick when a lookup is counted</label>
-            <label><input type="checkbox" data-opt="gazeFollow"> Scroll the reference to follow my typing</label>
-            <div class="line">Hold a look <input type="number" data-optnum="gazeHold" min="200" max="2000" step="100" style="width:64px"> ms before it counts</div>
-            <div class="line">Highlight <input type="number" data-optnum="gazeWords" min="2" max="14" step="1" style="width:52px"> words wide</div>
             <div class="line">Hide <select id="eraseStep">
               <option value="10">10</option>
               <option value="20">20</option>
@@ -822,11 +828,15 @@
               <option value="pairs">in pairs</option>
               <option value="build">building up from the start</option>
             </select></div>
-            <div class="head">Timed write</div>
-            <div class="line"><input type="number" id="timerMins" min="1" max="300"> min <button id="timerBtn" class="btn">Start</button></div>
-            <div class="head">Quotes</div>
-            <button class="item" id="quoteCardsBtn">Quotes to cards<small>A deck of your quotes to drill in Cards</small></button>
-            <button class="item" id="ankiBtn">Quotes to Anki<small>A cloze file to import there</small></button>
+            <div class="head">Timer</div>
+            <div class="line">Timed write and exam run <input type="number" id="timerMins" min="1" max="300"> min</div>
+            <div class="head">Eye tracking</div>
+            <label><input type="checkbox" data-opt="gazeBlur"> Blur the reference except where you look</label>
+            <label><input type="checkbox" data-opt="gazeDot"> Show the raw gaze dot</label>
+            <label><input type="checkbox" data-opt="gazeSound"> Soft tick when a lookup is counted</label>
+            <label><input type="checkbox" data-opt="gazeFollow"> Scroll the reference to follow my typing</label>
+            <div class="line">Hold a look <input type="number" data-optnum="gazeHold" min="200" max="2000" step="100" style="width:64px"> ms before it counts</div>
+            <div class="line">Highlight <input type="number" data-optnum="gazeWords" min="2" max="14" step="1" style="width:52px"> words wide</div>
           </div>
         </details>
       </span>
@@ -860,8 +870,8 @@
   <div id="banner" class="note" hidden></div>
   <div id="live" class="note" hidden></div>
   <div id="help">
-    Tap a word to reveal or hide it · drag across text for a whole stretch · double-tap for its sentence · right-click or long-press marks it missed<span class="keys"> ·
-    Space next word · Enter next sentence · ←&nbsp;step back</span><span id="typingHelp"> · type the next word then Space to check it · / hints, Tab shows it</span>
+    Tap a word to show or hide it · drag for a stretch · double-tap for its sentence · right-click or long-press marks it missed<span class="keys"> ·
+    Space next word · Enter next sentence · ←&nbsp;back</span><span id="typingHelp"> · type the next word then Space · / hints · Tab shows it</span>
     · <button id="hideHelp" class="link">hide</button>
   </div>
 
@@ -893,8 +903,6 @@
       <span class="spacer"></span>
       <label title="Ctrl+B"><input type="checkbox" data-opt="gazeBlur" id="gazeBlur"> Blur except where you look</label>
       <label title="Ctrl+D"><input type="checkbox" data-opt="gazeDot" id="gazeDotOpt"> Gaze dot</label>
-      <label title="How long a look must settle before it counts">Hold <input type="number" data-optnum="gazeHold" id="gazeHold" min="200" max="2000" step="100" style="width:64px"> ms</label>
-      <label title="How wide the highlight under your gaze is">Highlight <input type="number" data-optnum="gazeWords" id="gazeWords" min="2" max="14" step="1" style="width:48px"> words</label>
       <span id="gazeFlash"></span>
       <button id="gazePause" class="btn" title="Ctrl+P: ignore the camera until resumed">Pause</button>
       <button id="gazeUndo" class="btn" title="Ctrl+U: take back the last lookup">Undo look</button>
@@ -903,7 +911,7 @@
       <button id="gazeTest" class="btn" title="Ctrl+T: five targets, how far off each look lands">Test</button>
       <button id="gazeRecal" class="btn" title="Ctrl+C (with nothing selected)">Recalibrate</button>
     </div>
-    <div id="gazeKeys" hidden>Ctrl+P pause · Ctrl+U undo look · Ctrl+R reset · Ctrl+Q quick fix · Ctrl+T test accuracy · Ctrl+C recalibrate · Ctrl+D gaze dot · Ctrl+B blur · Ctrl+Enter check · Mark by hand: click a word to step its colour, drag or right-click for the picker, 1 2 3 colour, 0 clear</div>
+    <div id="gazeKeys" hidden>Ctrl+P pause · Ctrl+U undo look · Ctrl+R reset · Ctrl+Q quick fix · Ctrl+T test accuracy · Ctrl+C recalibrate · Ctrl+D gaze dot · Ctrl+B blur · Ctrl+Enter check · Mark by hand: click a word to step its colour, drag or right-click for the picker, 1 2 3 colour, 0 clear · Hold time and highlight width are under Options</div>
     <div id="blankMain">
       <div id="gazeRef" hidden></div>
       <textarea id="blankInput" spellcheck="false" autocomplete="off" autocorrect="off"></textarea>
@@ -1469,7 +1477,8 @@ function showPage(page) {
   current = page;
   const id = page === 'essay' ? 'work' : page === 'essays' ? 'setup' : page;
   document.querySelectorAll('.page').forEach(s => { s.hidden = s.id !== id; });
-  nav.hidden = backupBox.hidden = page === 'essay';
+  nav.hidden = page === 'essay';
+  backupBox.hidden = page !== 'essays';   // the safety copy lives with the essays, not on every page
   nav.querySelectorAll('a').forEach(a => a.classList.toggle('on', a.hash === '#' + page));
   fillSubjects();
   drawBackup();
@@ -2055,14 +2064,14 @@ function updateTimer() {
   });
   timerEl.textContent = text;
   focusChip.textContent = (f && f.subject ? f.subject + ' · ' : '') + text;
-  timerBtn.textContent = f ? 'Stop' : 'Start';
+  timerBtn.querySelector('span').textContent = f ? 'Stop the timer' : 'Timed write';
   if (onTick) onTick();
 }
 
 // Timed write: the essay's own way in to the timer, for writing it out under exam conditions
 timerBtn.addEventListener('click', () => {
   store.focus ? stopFocus() : startFocus(opts.timerMins, essay && essay.subject);
-  options.open = false;
+  modes.open = false;
 });
 timerEl.addEventListener('click', () => {
   if (Date.now() >= store.focus.end || confirm('Stop the timer?')) stopFocus();
@@ -4121,7 +4130,7 @@ document.getElementById('sheetDone').addEventListener('click', () => setView('es
 
 // One cloze note per quote: the sentence it sits in, with the quote blanked
 ankiBtn.addEventListener('click', () => {
-  options.open = false;
+  modes.open = false;
   if (!quotes.length) return alert(NO_QUOTES);
   const title = titleOf(essay).replace(/\s+/g, ' ');
   const lines = quotes.map(q => {
@@ -4136,7 +4145,7 @@ ankiBtn.addEventListener('click', () => {
 
 // A card per quote in a deck of its own: the sentence with the quote blanked, and the quote as the answer
 quoteCardsBtn.addEventListener('click', () => {
-  options.open = false;
+  modes.open = false;
   if (!quotes.length) return alert(NO_QUOTES);
   const name = titleOf(essay) + ' quotes';
   const decks = store.decks ||= [];
