@@ -112,13 +112,25 @@
 
   async function calibrate(gaze, { reusable = null, fullscreen = true } = {}) {
     show();
-    const offer = reusable && reusable.wx ? reusable : null;
-    const k = await prompt('<p><b>Calibration</b></p><p>A dot will appear. Look at its centre, click it (or press Space) and keep looking until it disappears. Keep your head where it will be while you write.</p>' +
-      '<p class="gz-muted">Click anywhere to begin' + (offer ? ', or press U to use the last calibration (from ' + when(offer.at) + ', error ' + Math.round(offer.error || 0) + ' px)' : '') + '. Esc cancels.</p>', offer ? ['u'] : []);
+    // the last calibration, from the caller or from the copy every page shares in this browser
+    let offer = reusable && reusable.wx ? reusable : null;
+    if (!offer) try { const m = JSON.parse(localStorage.getItem(SHARED_KEY)); if (m && m.wx) offer = m; } catch (e) {}
+    const k = await prompt('<p><b>Calibration</b></p>' +
+      (offer ? '<p><b>Press U</b> to reuse the calibration from ' + when(offer.at) + ' (error ' + Math.round(offer.error || 0) + ' px). One dot then re-centres it for how you are sitting now: about three seconds.</p><p><b>Click</b> to calibrate afresh: ' : '<p>Click to begin. ') +
+      'a dot will appear; look at its centre, click it (or press Space) and keep looking until it disappears. Keep your head where it will be while you write.</p>' +
+      '<p class="gz-muted">Esc cancels.</p>', offer ? ['u'] : []);
     if (k === 'escape') { hide(); return null; }
     if (fullscreen) await goFullscreen();
     if (k === 'u' && offer) {
-      if (offer.w === innerWidth && offer.h === innerHeight && gaze.importModel(offer)) { hide(); return Math.round(offer.error || 0); }
+      if (offer.w === innerWidth && offer.h === innerHeight && gaze.importModel(offer)) {
+        setMsg('<p><b>Re-centring</b></p><p>Sit as you are now, look at the dot and click it.</p>', false);
+        await sleep(50);
+        const n = await showDot(gaze, { x: innerWidth / 2, y: innerHeight / 2 }, () => { gaze.rebias(); return 9; });
+        if (n < 0) { hide(); return null; }
+        remember(gaze);
+        hide();
+        return Math.round(offer.error || 0);
+      }
       setMsg('<p>The window is a different size from last time, so a fresh calibration is needed.</p>', false);
       await sleep(1500);
     }
@@ -161,8 +173,16 @@
     const again = await prompt('<p><b>Error when holding a look: ' + e + ' px</b> <span class="gz-muted">(' + frame + ' px frame to frame; the screen is ' + lines + ' lines tall)</span></p><p>' + verdict + '</p><p class="gz-muted">Click to continue, press R to redo, or Esc to cancel.</p>', ['r']);
     if (again === 'escape') { hide(); return null; }
     if (again === 'r') return calibrate(gaze, { reusable: null, fullscreen });
+    remember(gaze);
     hide();
     return e;
+  }
+
+  // One copy of the calibration for every page on this site, so the standalone page and
+  // EasyEssay's writeout mode offer each other's last fit
+  const SHARED_KEY = 'easyessay-gaze-model';
+  function remember(gaze) {
+    try { const m = gaze.exportModel(); if (m) localStorage.setItem(SHARED_KEY, JSON.stringify(m)); } catch (e) {}
   }
 
   window.GazeCalibrate = { calibrate, quickFix, prompt, show, hide, goFullscreen, sleep };
