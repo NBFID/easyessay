@@ -163,6 +163,8 @@
       const dt = this.lastT == null ? 0 : Math.min(100, t - this.lastT);
       this.lastT = t;
       if (this.paused) { this._leave(t, true); return -1; }
+      // a blink changes nothing: the look, the highlight and the dwell all carry on through it
+      if (sample.blink) return this.current;
       if (!this.rects) this._measure();
       const pr = this.panelRect;
       // hysteresis: the gaze has to land well inside the panel to start counting, and only stops

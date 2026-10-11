@@ -179,10 +179,23 @@
       if (!lm) { this.lastFeatures = null; this.onGaze({ t, x: null, y: null, fix: null, blink: false, face: false, drift: 0 }); return; }
       const f = this._features(lm, result.facialTransformationMatrixes && result.facialTransformationMatrixes[0], v.videoWidth, v.videoHeight);
       this.lastFeatures = f;
-      // A blink, and the few frames after it while the lid settles and the iris landmark wanders
-      if (f.blink) this.blinkCool = 4;
-      else if (this.blinkCool > 0) this.blinkCool--;
-      if (f.blink || this.blinkCool > 0) { this.onGaze({ t, x: null, y: null, fix: this.fix, region: this.region, blink: true, face: true, drift: this._drift(f) }); return; }
+      // A blink. The iris reading goes wild while the lid is on its way down, through the blink,
+      // and until the lids are back open, so all of that is skipped: the lid closing (a sharp
+      // drop in the eye's openness) or shut (well below how open the eyes were in calibration)
+      // starts it, and it ends once the eyes have been open again for a few frames. The frames
+      // just before it are thrown out of the smoothing too, since the lid was already moving.
+      const earTyp = (this.model && this.model.earTyp) || 0.28;
+      const closing = this.lastEar != null && f.ear < this.lastEar * 0.75;
+      const shut = f.blink || f.ear < earTyp * 0.6;
+      this.lastEar = f.ear;
+      if (shut || closing) {
+        if (!this.blinking) { this.blinking = true; this.history = this.history.slice(0, -3); this.fixWin = this.fixWin.slice(0, -3); }
+        this.reopen = 0;
+      } else if (this.blinking) {
+        this.reopen = f.ear >= earTyp * 0.85 ? this.reopen + 1 : 0;
+        if (this.reopen >= 3) this.blinking = false;
+      }
+      if (this.blinking) { this.onGaze({ t, x: null, y: null, fix: this.fix, region: this.region, blink: true, face: true, drift: this._drift(f) }); return; }
       if (this.collecting) {
         const c = this.collecting;
         if (c.pursuit) {
@@ -527,7 +540,7 @@
       }
       // how far the lids closed while looking here: the lowest dots set the "looking down" threshold
       const ears = [...c.ears].sort((a, b) => a - b);
-      this.points.push({ x: c.x, y: c.y, rows: keep, moving: c.moving, ear: ears[Math.floor(ears.length * 0.1)] || 0.25 });
+      this.points.push({ x: c.x, y: c.y, rows: keep, moving: c.moving, ear: ears[Math.floor(ears.length * 0.1)] || 0.25, earMed: ears[ears.length >> 1] || 0.28 });
       return keep.length;
     }
 
@@ -614,7 +627,9 @@
       }
       // lids are lowest when looking at the bottom row; "looking away" has to be clearly below that
       const earMin = Math.min(...still.map(p => p.ear));
-      this.model = { mean, std, wx: w.wx, wy: w.wy, head, headScale, headRange: { lo, hi }, headFit: !!headFit, earMin, error: best.err, lambda: best.lambda, at: Date.now(), w: innerWidth, h: innerHeight };
+      // how open the eyes usually are: the blink test is relative to this
+      const earTyp = median(still.map(p => p.earMed || p.ear * 1.15));
+      this.model = { mean, std, wx: w.wx, wy: w.wy, head, headScale, headRange: { lo, hi }, headFit: !!headFit, earMin, earTyp, error: best.err, lambda: best.lambda, at: Date.now(), w: innerWidth, h: innerHeight };
       // both local corrections are fitted now; chooseCorrection() picks one once the check dots are in
       const opts = {};
       for (const name of Object.keys(RBF_SETS)) {
