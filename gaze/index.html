@@ -253,15 +253,13 @@ function renderRef(container, sents) {
   });
 }
 
-// Blur mode: only the lines around the gaze (or the sentence being written, when gaze is off the panel) stay sharp
-function updateBlur(y, current) {
+// Blur mode: only the lines around the gaze stay sharp, and nothing at all while the gaze is off the panel
+function updateBlur(y) {
   if (!session.classList.contains('blur')) return;
   const band = lineH * 2.6;
-  sentences.forEach((sn, i) => {
+  sentences.forEach(sn => {
     let sharp = false;
-    if (y != null) {
-      for (const r of sn.el.getClientRects()) if (r.bottom > y - band && r.top < y + band) { sharp = true; break; }
-    } else if (current != null) sharp = Math.abs(i - current) <= 1;
+    if (y != null) for (const r of sn.el.getClientRects()) if (r.bottom > y - band && r.top < y + band) { sharp = true; break; }
     sn.el.classList.toggle('dim', !sharp);
   });
 }
@@ -338,10 +336,11 @@ function runSession(text) {
     const cur = mapper.onGaze(s);
     if (performance.now() - blurTick > 120) {
       blurTick = performance.now();
-      updateBlur(cur >= 0 ? (s.fix ? s.fix.y : s.y) : null, mapper.cursor != null ? mapper.cursor : (mapper.progress >= 0 ? mapper.progress : 0));
+      // sharp only while the gaze has been on the panel a moment (before the hold, so it can be read)
+      updateBlur(mapper.enteredAt != null && s.t - mapper.enteredAt > 150 ? s.y : null);
     }
   };
-  updateBlur(null, 0);
+  updateBlur(null);
   if ($('mode').value === 'typed') typed.focus();
 }
 
@@ -401,7 +400,7 @@ addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   const selecting = document.activeElement === typed && typed.selectionStart !== typed.selectionEnd;
   const act = { p: () => setPaused(!paused), u: undoLook, r: resetLooks, q: () => $('fixBtn').click(), d: () => { $('dotOpt').checked = !$('dotOpt').checked; gazeDot.classList.toggle('on', $('dotOpt').checked); saved.dotOpt = $('dotOpt').checked; save(); },
-    b: () => { $('blurOpt').checked = !$('blurOpt').checked; session.classList.toggle('blur', $('blurOpt').checked); saved.blurOpt = $('blurOpt').checked; save(); updateBlur(null, mapper.cursor != null ? mapper.cursor : Math.max(0, mapper.progress)); },
+    b: () => { $('blurOpt').checked = !$('blurOpt').checked; session.classList.toggle('blur', $('blurOpt').checked); saved.blurOpt = $('blurOpt').checked; save(); updateBlur(null); },
     c: () => { if (!selecting) $('recalBtn').click(); else return false; }, enter: finishSession }[k];
   if (!act) return;
   if (act() === false) return;

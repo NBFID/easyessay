@@ -3166,15 +3166,14 @@ function renderGazeRef(sents) {
   });
 }
 
-// Blur option: only the lines around the gaze stay sharp (or, with the gaze off the panel, the
-// sentence being written and its neighbours), so a lookup is a real lookup
-function gazeBlurUpdate(y, current) {
+// Blur option: only the lines around the gaze stay sharp, and nothing at all while the gaze is off
+// the panel, so a lookup is a real lookup and typing never reveals the next sentence
+function gazeBlurUpdate(y) {
   if (!gz || !blank.classList.contains('blur')) return;
   const band = GAZE_LINE * 2.6;
-  gz.sents.forEach((sn, i) => {
+  gz.sents.forEach(sn => {
     let sharp = false;
-    if (y != null) { for (const r of sn.el.getClientRects()) if (r.bottom > y - band && r.top < y + band) { sharp = true; break; } }
-    else if (current != null) sharp = Math.abs(i - current) <= 1;
+    if (y != null) for (const r of sn.el.getClientRects()) if (r.bottom > y - band && r.top < y + band) { sharp = true; break; }
     sn.el.classList.toggle('dim', !sharp);
   });
 }
@@ -3192,7 +3191,8 @@ function gazeSample(s) {
   if (now - gz.blurAt > 120) {
     gz.blurAt = now;
     const m = gz.mapper;
-    gazeBlurUpdate(cur >= 0 ? (s.fix ? s.fix.y : s.y) : null, m.cursor != null ? m.cursor : (m.progress >= 0 ? m.progress : 0));
+    // sharp only while the gaze has been on the panel a moment (before the hold, so it can be read)
+    gazeBlurUpdate(m.enteredAt != null && s.t - m.enteredAt > 150 ? s.y : null);
   }
 }
 
@@ -3274,7 +3274,7 @@ function gazeStart(t) {
     gazeClock.textContent = gazeClockText(gazeElapsed());
     gazeFps.textContent = gzTracker ? Math.round(gzTracker.fps) + ' fps' : '';
   }, 1000);
-  gazeBlurUpdate(null, 0);
+  gazeBlurUpdate(null);
   window.scrollTo(0, 0);
   blankInput.focus();
 }
@@ -3429,7 +3429,7 @@ gazeBlur.addEventListener('change', () => {
   saveStore();
   blank.classList.toggle('blur', gazeBlur.checked);
   if (!gazeBlur.checked) gazeRef.querySelectorAll('.dim').forEach(e => e.classList.remove('dim'));
-  else gazeBlurUpdate(null, gz && gz.mapper && gz.mapper.cursor != null ? gz.mapper.cursor : 0);
+  else gazeBlurUpdate(null);
 });
 
 gazeDotOpt.addEventListener('change', () => {
