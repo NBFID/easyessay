@@ -774,6 +774,7 @@
             <button class="item" data-mode="quotes">Quote drill<small>Hide just the quotes</small></button>
             <button class="item" data-mode="tech">Techniques<small>Hide the technique terms</small></button>
             <button class="item" data-mode="missed">Missed words<small>Hide just the words you get wrong</small></button>
+            <button class="item" data-mode="missedSents">Missed sentences<small>Hide every sentence that has a word you got wrong</small></button>
             <div class="head">Read</div>
             <button class="item" data-mode="evidence">Evidence table<small>Technique, quote and analysis, paragraph by paragraph</small></button>
             <button class="item" data-mode="sheet">First-letter sheet<small>A cue sheet you can print</small></button>
@@ -3807,6 +3808,21 @@ function drillMissed() {
   modeNote('Missed words: only the words you have got wrong are hidden.');
 }
 
+// Whole sentences hidden wherever one of their words has been got wrong, so the slip is
+// practised with its run-up and not just as a single blank
+function drillMissedSentences() {
+  const [lo, hi] = range();
+  const weak = new Set();
+  for (let i = lo; i <= hi; i++) if (missed[i] && words[i].key) weak.add(words[i].s);
+  if (!weak.size) return alert('No missed words here yet. A word is marked when you get it wrong.');
+  beginAction();
+  for (let i = lo; i <= hi; i++) setCovered(i, weak.has(words[i].s));
+  endAction(lo - 1);
+  stepping = true;
+  draw();
+  modeNote('Missed sentences: ' + weak.size + (weak.size === 1 ? ' sentence' : ' sentences') + ' with a word you got wrong hidden whole.');
+}
+
 // The opening words of each sentence: the hardest part to get going
 function drillOpeners() {
   const [lo, hi] = range();
@@ -4344,6 +4360,7 @@ modes.addEventListener('click', (e) => {
     quotes: hideQuotes,
     tech: drillTech,
     missed: drillMissed,
+    missedSents: drillMissedSentences,
     evidence: openEvidence,
     sheet: openSheet,
     adapt: openAdapt
