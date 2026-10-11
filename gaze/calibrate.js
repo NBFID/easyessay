@@ -120,6 +120,8 @@
       addEventListener('keydown', onKey);
       const t0 = performance.now();
       gaze.collect(W / 2, H / 2, { pursuit: true });
+      // animation frames stop when the page is hidden behind another window; a timer carries on
+      const next = cb => document.hidden ? setTimeout(cb, 16) : requestAnimationFrame(cb);
       const step = () => {
         const now = performance.now(), u = (now - t0) / ms;
         if (stop || u >= 1) {
@@ -133,9 +135,9 @@
         const x = W / 2 + ax * ease * Math.sin(3 * ph / 4.2), y = H / 2 + ay * ease * Math.sin(2 * ph / 4.2 + Math.PI / 3);
         dot.style.left = x + 'px'; dot.style.top = y + 'px';
         gaze.pursuitAt(x, y, now);
-        requestAnimationFrame(step);
+        next(step);
       };
-      requestAnimationFrame(step);
+      next(step);
     });
   }
 
@@ -316,5 +318,5 @@
     try { const m = gaze.exportModel(); if (m) localStorage.setItem(SHARED_KEY, JSON.stringify(m)); } catch (e) {}
   }
 
-  window.GazeCalibrate = { calibrate, accuracyTest, quickFix, prompt, show, hide, goFullscreen, sleep };
+  window.GazeCalibrate = { calibrate, accuracyTest, pursuit, quickFix, prompt, show, hide, goFullscreen, sleep };
 })();
