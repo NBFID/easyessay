@@ -55,8 +55,15 @@
   }
 
   class GazeTracker {
-    constructor({ video, onGaze, onStatus, onFrame } = {}) {
+    // The cameras available, for a picker: [{ deviceId, label }] (labels appear once the camera has been allowed)
+    static async cameras() {
+      try { return (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput').map(d => ({ deviceId: d.deviceId, label: d.label })); }
+      catch (e) { return []; }
+    }
+
+    constructor({ video, onGaze, onStatus, onFrame, deviceId = null } = {}) {
       this.video = video;
+      this.deviceId = deviceId;
       this.onGaze = onGaze || (() => {});
       this.onStatus = onStatus || (() => {});
       this.onFrame = onFrame || null;   // (landmarks, result) for drawing a preview
@@ -91,9 +98,9 @@
       catch (e) { console.warn('GPU delegate failed, using CPU', e); this.landmarker = await make('CPU'); }
 
       this.onStatus('Starting the camera…');
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' }, audio: false,
-      });
+      const video = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+      if (this.deviceId) video.deviceId = { exact: this.deviceId }; else video.facingMode = 'user';
+      this.stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
       this.video.srcObject = this.stream;
       this.video.muted = true;
       this.video.playsInline = true;

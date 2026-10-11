@@ -3312,6 +3312,21 @@ function gazeFinish(t) {
       box.append(el('div', { className: 'line' }, el('b', { textContent: 'The exact words under your gaze' })));
       phrases.forEach(q => box.append(el('div', { className: 'line' }, el('span', {}, el('span', { className: 'w h' + LookupMapper.tier(q.ms), textContent: '…' + q.text + '…' })), el('b', { textContent: (q.ms / 1000).toFixed(1) + ' s' }))));
     }
+    // straight into a drill: those sentences hidden whole, the rest of the essay as the run-up
+    const lookedSents = new Set(looked.map(s => sents[s.s].es));
+    const drill = el('button', { type: 'button', className: 'btn', textContent: 'Hide these sentences' });
+    drill.addEventListener('click', () => {
+      banner.hidden = true;
+      setView('essay');
+      const [lo, hi] = range();
+      beginAction();
+      for (let i = lo; i <= hi; i++) setCovered(i, lookedSents.has(words[i].s));
+      endAction(lo - 1);
+      stepping = true;
+      draw();
+      modeNote('The ' + lookedSents.size + (lookedSents.size === 1 ? ' sentence' : ' sentences') + ' you looked up, hidden whole.');
+    });
+    box.append(el('div', { className: 'line' }, drill));
     details = el('details', {}, el('summary', { textContent: 'What you looked up' }), box);
   }
   gazeStop();
@@ -3936,6 +3951,12 @@ function drawTrouble() {
   const worst = [...slips].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 3);
   trouble.hidden = !worst.length;
   troubleList.textContent = '';
+  if (worst.length) {
+    // every sentence with a slip, hidden whole, in one go
+    const all = el('button', { type: 'button', className: 'btn', textContent: 'Hide all missed sentences' });
+    all.addEventListener('click', drillMissedSentences);
+    troubleList.append(el('div', { className: 'line' }, el('span', { className: 'muted', textContent: 'Or drill every sentence with a slip at once' }), all));
+  }
   worst.forEach(([s, n]) => {
     const ids = sentenceOf(words.findIndex(w => w.s === s)), lo = ids[0], hi = ids[ids.length - 1];
     const b = el('button', { type: 'button', className: 'btn', textContent: 'Drill' });

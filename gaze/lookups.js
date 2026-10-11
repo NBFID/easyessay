@@ -72,7 +72,8 @@
       if (!toks.length) { pos = -1; return null; }
       const K = Math.min(5, toks.length);
       const tail = toks.slice(-K);
-      const lo = Math.max(0, pos - 25), hi = Math.min(W.length - K, pos + 90);
+      // search near the last position, but as far as the typed length suggests (a paste jumps a long way)
+      const lo = Math.max(0, pos - 25), hi = Math.min(W.length - K, Math.max(pos + 90, toks.length + 40));
       let best = -1, bestN = 0;
       for (let j = lo; j <= hi; j++) {
         let n = 0;
@@ -80,7 +81,9 @@
           const w = W[j + k].w;
           if (w === tail[k] || (w.length > 4 && tail[k].length > 4 && (w.startsWith(tail[k]) || tail[k].startsWith(w)))) n++;
         }
-        if (n > bestN || (n === bestN && n && Math.abs(j - pos) < Math.abs(best - pos))) { bestN = n; best = j; }
+        // ties (a phrase the essay repeats) go to the candidate nearest where the writer should be
+        const expect = pos >= 0 ? pos : toks.length - 1;
+        if (n > bestN || (n === bestN && n && Math.abs(j - expect) < Math.abs(best - expect))) { bestN = n; best = j; }
       }
       const need = K <= 2 ? K : Math.ceil(K * 0.6);
       if (bestN >= need) pos = best + K - 1;

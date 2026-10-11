@@ -101,6 +101,15 @@
     <label>Gaze circle <input id="ringPx" type="number" min="40" max="200" step="10" value="90" style="width:64px"> px across</label>
   </div>
   <div class="row">
+    <label><input id="soundOpt" type="checkbox"> Soft tick when a lookup is counted</label>
+    <label><input id="followOpt" type="checkbox" checked> Scroll the reference to follow my typing</label>
+  </div>
+  <div class="row">
+    <button id="camBtn" class="btn">Check camera</button>
+    <select id="camSel" hidden></select>
+    <span id="camStatus" class="muted small"></span>
+  </div>
+  <div class="row">
     <button id="startBtn" class="btn primary">Calibrate and start</button>
     <span id="status" class="muted"></span>
   </div>
@@ -172,7 +181,7 @@ const ref = $('ref'), typed = $('typed');
 
 essayIn.value = saved.essay || '';
 essayIn.addEventListener('input', () => { saved.essay = essayIn.value; save(); });
-['mode', 'fontPx', 'blurOpt', 'dotOpt', 'holdMs', 'ringPx'].forEach(id => {
+['mode', 'fontPx', 'blurOpt', 'dotOpt', 'holdMs', 'ringPx', 'soundOpt', 'followOpt', 'camSel'].forEach(id => {
   const n = $(id), k = n.type === 'checkbox' ? 'checked' : 'value';
   if (saved[id] != null) n[k] = saved[id];
   n.addEventListener('change', () => { saved[id] = n[k]; save(); });
@@ -186,9 +195,59 @@ let onFrame = null;
 
 async function ensureTracker() {
   if (gaze) return;
-  gaze = new GazeTracker({ video: preview, onStatus: m => { status.textContent = m; }, onGaze: s => onGaze(s), onFrame: (lm, r) => onFrame && onFrame(lm, r) });
-  await gaze.init();
+  const t = new GazeTracker({ video: preview, deviceId: $('camSel').value || null, onStatus: m => { status.textContent = m; }, onGaze: s => onGaze(s), onFrame: (lm, r) => onFrame && onFrame(lm, r) });
+  await t.init();
+  gaze = t;
+  fillCameras();
 }
+
+// Once a camera has been allowed its name is known, so the picker can list them (only shown if there is more than one)
+async function fillCameras() {
+  const cams = await GazeTracker.cameras();
+  const sel = $('camSel');
+  const was = sel.value;
+  sel.textContent = '';
+  cams.forEach((c, i) => sel.append(el('option', { value: c.deviceId, textContent: c.label || 'Camera ' + (i + 1) })));
+  if ([...sel.options].some(o => o.value === was)) sel.value = was;
+  sel.hidden = cams.length < 2;
+}
+fillCameras();
+$('camSel').addEventListener('change', () => { if (gaze) { gaze.stop(); gaze = null; } if (!$('camBtn').disabled) checkCamera(); });
+
+// Camera check: a live preview with a verdict on face, distance and light, before any calibration
+let checking = false;
+async function checkCamera() {
+  const st = $('camStatus');
+  $('camBtn').disabled = true;
+  try { await ensureTracker(); } catch (e) { $('camBtn').disabled = false; st.textContent = 'Could not start the camera: ' + (e.message || e); return; }
+  $('camBtn').disabled = false;
+  preview.className = '';
+  checking = true;
+  const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d', { willReadFrequently: true });
+  let lastLight = 0, light = null;
+  onFrame = lm => {
+    if (!checking) return;
+    const now = performance.now();
+    if (now - lastLight > 600 && preview.videoWidth) {
+      lastLight = now;
+      canvas.width = 64; canvas.height = 36;
+      ctx.drawImage(preview, 0, 0, 64, 36);
+      const d = ctx.getImageData(0, 0, 64, 36).data;
+      let sum = 0;
+      for (let i = 0; i < d.length; i += 4) sum += d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11;
+      light = sum / (d.length / 4);
+    }
+    const parts = [];
+    if (!lm) parts.push('No face in view');
+    else {
+      const w = Math.abs(lm[454].x - lm[234].x);   // face width as a fraction of the frame
+      parts.push(w > 0.42 ? 'Too close: sit back a little' : w < 0.16 ? 'Too far: come closer' : 'Face found, good distance');
+    }
+    if (light != null) parts.push(light < 60 ? 'too dark: add light in front of you' : light > 200 ? 'very bright: avoid a window behind you' : 'light is fine');
+    st.textContent = parts.join(' · ') + ' · ' + Math.round(gaze.fps) + ' fps';
+  };
+}
+$('camBtn').addEventListener('click', checkCamera);
 
 /* ---------- calibration (the overlay itself lives in calibrate.js) ---------- */
 
@@ -212,6 +271,33 @@ async function calibrate(offerLast = true) {
 let sentences = [], mapper = null, cursorFrom = null, startedAt = 0, clockTimer = 0, lastTyped = '';
 let lineH = 28;
 let paused = false, pausedAt = 0, pausedMs = 0;
+let driftSince = 0, driftHinted = false;
+
+// A soft tick, for knowing a lookup was counted without looking at the bar
+let audio = null;
+function tick() {
+  try {
+    audio ||= new (window.AudioContext || window.webkitAudioContext)();
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = 880; o.type = 'sine';
+    g.gain.setValueAtTime(0.0001, audio.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.08, audio.currentTime + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.12);
+    o.connect(g).connect(audio.destination);
+    o.start(); o.stop(audio.currentTime + 0.13);
+  } catch (e) {}
+}
+
+// Keep the sentence being written near the top of the reference, so a lookup never needs the mouse.
+// Only while the gaze is off the panel: never scroll what is being read.
+function followTyping() {
+  if (!$('followOpt').checked || !mapper || mapper.cursor == null || mapper.enteredAt != null) return;
+  const sn = sentences[mapper.cursor];
+  if (!sn) return;
+  const r = sn.el.getBoundingClientRect(), pr = ref.getBoundingClientRect();
+  const want = pr.top + pr.height * 0.3;
+  if (Math.abs(r.top - want) > pr.height * 0.25) { ref.scrollTo({ top: ref.scrollTop + (r.top - want), behavior: 'smooth' }); mapper.rects = null; }
+}
 const ring = $('ring');
 const elapsed = () => performance.now() - startedAt - pausedMs - (paused ? performance.now() - pausedAt : 0);
 
@@ -273,9 +359,14 @@ async function startSession() {
     await ensureTracker();
   } catch (e) {
     $('startBtn').disabled = false;
-    err.textContent = 'Could not start: ' + (e.message || e) + (location.protocol === 'file:' ? '\nIf the camera is blocked on a file:// page, serve the folder instead (see README).' : '');
+    const why = /denied|permission|notallowed/i.test((e.message || '') + (e.name || '')) ? 'the camera was blocked. Allow it for this site (the icon in the address bar) and try again.'
+      : /fetch|import|network|wasm/i.test(e.message || '') ? 'the face model could not be downloaded. Check the connection and try again.' : (e.message || e) + '.';
+    err.textContent = 'Could not start: ' + why + (location.protocol === 'file:' ? '\nIf the camera is blocked on a file:// page, serve the folder instead (see README).' : '');
+    gaze = null;
     return;
   }
+  checking = false;
+  onFrame = null;
   $('startBtn').disabled = false;
   const e = await calibrate();
   if (e == null) { show(setup); return; }
@@ -304,7 +395,7 @@ function runSession(text) {
     ringR: (+$('ringPx').value || 90) / 2,
     // the side facing the writing: the box on the right when typing, the desk below when on paper
     inset: $('mode').value === 'paper' ? { bottom: 70 } : { right: 70 },
-    onLook: () => { $('lookCount').textContent = mapper.log.length + ' lookup' + (mapper.log.length === 1 ? '' : 's'); mapper.paint(); },
+    onLook: entry => { $('lookCount').textContent = mapper.log.length + ' lookup' + (mapper.log.length === 1 ? '' : 's'); mapper.paint(); if (entry && $('soundOpt').checked) tick(); },
     onRing: r => {
       lastHits.forEach(w => w.classList.remove('hit'));
       lastHits = r ? r.hits : [];
@@ -332,6 +423,9 @@ function runSession(text) {
       gazeDot.classList.toggle('fix', !!s.fix);
     }
     $('drift').style.display = s.drift > 1 ? 'inline' : 'none';
+    // a head that has stayed away from its calibrated spot for a while: suggest the two-second fix once
+    if (s.drift > 1) { driftSince ||= performance.now(); if (performance.now() - driftSince > 6000 && !driftHinted) { driftHinted = true; flash('Head has moved: press Ctrl+Q to re-centre'); } }
+    else { driftSince = 0; driftHinted = false; }
     if (paused) return;
     const cur = mapper.onGaze(s);
     if (performance.now() - blurTick > 120) {
@@ -349,7 +443,7 @@ typed.addEventListener('keydown', () => { lastKeyAt = performance.now(); });
 typed.addEventListener('input', () => {
   lastKeyAt = performance.now();
   lastTyped = typed.value;
-  mapper && mapper.setCursor(cursorFrom(typed.value));
+  if (mapper) { mapper.setCursor(cursorFrom(typed.value)); followTyping(); }
 });
 
 // One dot, two seconds: re-centre after shifting in the chair. The session keeps running underneath.
@@ -484,11 +578,17 @@ function drawHistory() {
   const list = saved.sessions || [];
   if (!list.length) return;
   h.append(el('h2', { textContent: 'Past writeouts' }));
-  list.slice(0, 8).forEach(rec => {
+  // lookups per hundred words, so essays of different lengths compare; the arrow is against the writeout before
+  const rate = rec => rec.words ? rec.lookups.length * 100 / rec.words : rec.lookups.length;
+  list.slice(0, 8).forEach((rec, i) => {
     const b = el('button', { className: 'btn', textContent: 'Report' });
     b.addEventListener('click', () => showReport(rec));
+    const prev = list[i + 1];
+    const delta = prev ? rate(rec) - rate(prev) : 0;
+    const arrow = !prev ? '' : Math.abs(delta) < 0.3 ? ' · same as before' : delta < 0 ? ' · ▼ ' + Math.abs(delta).toFixed(1) + ' better' : ' · ▲ ' + delta.toFixed(1) + ' more';
     h.append(el('div', { className: 'row' },
-      el('span', { textContent: new Date(rec.at).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) + ' · ' + clock(rec.duration) + ' · ' + rec.lookups.length + ' lookups · ' + rec.sentences.filter(s => s.looks).length + ' sentences' }), b));
+      el('span', { textContent: new Date(rec.at).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) + ' · ' + clock(rec.duration) + ' · ' + rec.lookups.length + ' lookups · ' + rec.sentences.filter(s => s.looks).length + ' sentences · ' + rate(rec).toFixed(1) + ' per 100 words' }),
+      el('span', { className: 'muted small', textContent: arrow }), b));
   });
 }
 drawHistory();

@@ -18,7 +18,10 @@ then open http://localhost:8787/gaze/
 1. **Setup.** Paste the essay (blank lines between paragraphs). Choose whether you are typing the
    writeout in the app or writing on paper, and whether the reference should blur except around
    where you are looking (recommended: it stops you reading the next line "for free" with
-   peripheral vision, so a lookup is a real lookup).
+   peripheral vision, so a lookup is a real lookup). **Check camera** shows a live preview with
+   a verdict on face, distance and light before you commit to a calibration, and a picker
+   appears if the laptop has more than one camera. Optional: a soft tick when a lookup is
+   counted, and the reference scrolling to follow your typing so a lookup never needs the mouse.
 2. **Calibration.** The app goes fullscreen. Sixteen dots appear one at a time: look at the dot,
    click it (or press Space) and keep looking for a second. Then three dots are looked at while
    you slowly move your head about (left, right, up, down, closer, further) so the fit learns how
