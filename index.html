@@ -378,6 +378,36 @@
   #blank .top, #blank .go, #adapt .go { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 0 0 10px; }
   #blank .go, #adapt .go { margin: 10px 0 0; }
   #blankInput { height: 55vh; min-height: 220px; }
+  /* writeout with eye tracking: the reference beside the page, dimmed, with the camera's view in the corner */
+  #gazeBar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 0 0 10px; font-size: 14px; }
+  #gazeBar .spacer { flex: 1; }
+  #gazeBar label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+  #gazeDrift { color: #b45309; display: none; }
+  #gazeDrift.on { display: inline; }
+  #blank.gaze #blankMain { display: flex; gap: 14px; height: calc(100vh - 230px); min-height: 320px; }
+  #blank.gaze #blankInput { flex: 1; min-width: 0; height: auto; min-height: 0; resize: none; }
+  #gazeRef { flex: 0 0 56%; overflow: auto; padding: 10px 16px 40vh; background: var(--soft); border-radius: 10px; font-family: Georgia, "Times New Roman", serif; font-size: 17px; line-height: 1.65; opacity: 0.85; }
+  #gazeRef p { margin: 0 0 1em; }
+  #gazeRef .ptitle { font: 600 13px/1.4 var(--ui); color: var(--muted); margin: 0 0 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+  #gazeRef .sent { transition: filter .25s, opacity .25s; border-radius: 3px; }
+  #blank.blur #gazeRef .sent.dim { filter: blur(5px); opacity: 0.5; }
+  #gazeRef .sent.now { background: rgba(255, 140, 0, .38); box-shadow: 0 0 0 2px rgba(255, 140, 0, .38); }
+  #gazeVideo { position: fixed; right: 14px; bottom: 14px; width: 180px; border-radius: 8px; border: 1px solid var(--line); background: #000; z-index: 1001; transition: width .3s, opacity .3s; }
+  #gazeVideo.mini { width: 88px; opacity: 0.7; }
+  #gazeVideo.off { opacity: 0; pointer-events: none; width: 2px; }   /* kept playing, so frames keep coming */
+  #gazeDot { position: fixed; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; border: 2px solid var(--red); pointer-events: none; z-index: 1002; display: none; }
+  #gazeDot.on { display: block; }
+  #gazeDot.fix { background: color-mix(in srgb, var(--red) 40%, transparent); }
+  #gazeDot.away { opacity: 0; }
+  @media (max-width: 760px) {
+    #blank.gaze #blankMain { flex-direction: column; height: auto; }
+    #gazeRef { flex: none; max-height: 40vh; padding-bottom: 16px; }
+    #blank.gaze #blankInput { height: 40vh; }
+  }
+  .looks { margin-top: 6px; }
+  .looks .line { display: flex; gap: 10px; align-items: baseline; padding: 3px 0; }
+  .looks .line span:first-child { flex: 1; }
+  .looks .line b { white-space: nowrap; font-weight: 600; }
   #adaptQ {
     font-size: 18px;
     font-weight: 600;
@@ -719,6 +749,7 @@
           <div class="panel">
             <div class="head">Recall</div>
             <button class="item" data-mode="blank">Blank page<small>Write it from memory, then check it</small></button>
+            <button class="item" data-mode="gaze">Writeout with eye tracking<small>The essay beside the page; the camera logs what you look up</small></button>
             <button class="item" data-mode="exam">Exam run<small>A question, the clock and a blank page</small></button>
             <div class="head">Drills</div>
             <button class="item" data-mode="skeleton">Skeleton<small>Only the first words of each sentence show</small></button>
@@ -829,12 +860,29 @@
       Write <select id="blankTarget"></select> from memory.
       <span class="muted">Capitals and punctuation don't count.</span>
     </div>
-    <textarea id="blankInput" spellcheck="false" autocomplete="off" autocorrect="off"></textarea>
+    <div id="gazeBar" hidden>
+      <b>Eye tracking</b>
+      <span id="gazeClock">0:00</span>
+      <span id="gazeLooks">0 lookups</span>
+      <span id="gazeFps" class="muted"></span>
+      <span id="gazeDrift">Head has moved: consider recalibrating</span>
+      <span class="spacer"></span>
+      <label><input type="checkbox" id="gazeBlur"> Blur except where you look</label>
+      <label><input type="checkbox" id="gazeDotOpt"> Gaze dot</label>
+      <button id="gazeFix" class="btn" title="Shifted in your chair? One dot re-centres the tracking">Quick fix</button>
+      <button id="gazeRecal" class="btn">Recalibrate</button>
+    </div>
+    <div id="blankMain">
+      <div id="gazeRef" hidden></div>
+      <textarea id="blankInput" spellcheck="false" autocomplete="off" autocorrect="off"></textarea>
+    </div>
     <div class="go">
       <button id="blankCheck" class="btn primary" title="Ctrl+Enter">Check</button>
       <button id="blankCancel" class="btn">Cancel</button>
       <span id="blankCount" class="muted"></span>
     </div>
+    <video id="gazeVideo" class="off" playsinline muted hidden></video>
+    <div id="gazeDot"></div>
   </div>
 
   <div id="adapt" hidden>
@@ -1728,6 +1776,7 @@ function openEssay(rec, fresh, practise) {
 // Close the open essay, keeping where it was up to
 function leaveEssay() {
   stopLive();
+  gazeStop();
   saveNow();
   essay = null;
   store.openId = null;
@@ -1739,6 +1788,7 @@ essaysBtn.addEventListener('click', () => go('essays'));
 
 // Which part of the work screen is showing: the essay, the blank page or the adapt drill
 function setView(v) {
+  if (v !== 'blank') gazeStop();
   view = v;
   work.dataset.view = v;
   stage.hidden = v !== 'essay';
@@ -2938,6 +2988,7 @@ blankTarget.addEventListener('change', loadDraft);
 blankInput.addEventListener('input', () => {
   essay.draft = { id: blankTarget.value, text: blankInput.value };
   blankCount.textContent = wc(blankInput.value) + ' words';
+  if (gz && gz.mapper) gz.mapper.setCursor(gz.cursorFrom(blankInput.value));
   scheduleSave();
 });
 
@@ -2997,7 +3048,9 @@ blankCheck.addEventListener('click', () => {
   if (!blankInput.value.trim()) return;
   const t = blankTargets().find(x => x.id === blankTarget.value);
   const r = grade(blankInput.value, t.lo, t.hi);
+  const looked = gazeFinish(t);   // null unless this was a writeout with eye tracking
   let said = `You recalled ${r.ok} of ${r.total} words (${r.pct}%).`;
+  if (looked) said += ' ' + looked.said;
   if (t.id === 'all') {
     // a whole-essay run goes on the record, with its time if it was against the clock
     const run = { at: Date.now(), pct: r.pct };
@@ -3016,11 +3069,267 @@ blankCheck.addEventListener('click', () => {
   setView('essay');
   drawMap();
   fillBar(banner, said + (r.ok < r.total ? ' The words you dropped are in red.' : ''), [
-    ['Try again', () => openBlank(t.id)],
+    looked ? ['Again with eye tracking', gazeRun] : ['Try again', () => openBlank(t.id)],
     ['Close', () => { banner.hidden = true; }, 'link']
-  ], r.attempt);
+  ], looked && looked.details ? el('div', { style: 'flex-basis: 100%' }, r.attempt, looked.details) : r.attempt);
   scrollToWord(t.lo);
   saveNow();
+});
+
+/* ---------- writeout with eye tracking ---------- */
+
+// The blank page with the essay beside it, dimmed. gaze/gaze.js watches the camera, gaze/lookups.js
+// turns the gaze into "which sentence did I just look up", and on Check every lookup counts as a
+// slip against that sentence's key words, so Trouble spots and the Missed words drill pick it up.
+// The scripts load on first use; the standalone page at gaze/ shares them.
+let gz = null;          // during a session: { loading, target, sents, mapper, cursorFrom, started, timer, blurAt, paused }
+let gzTracker = null;   // the camera and face model, kept until the mode is left
+const GAZE_FILES = ['gaze/gaze.js', 'gaze/lookups.js', 'gaze/calibrate.js'];
+const GAZE_LINE = 17 * 1.65;   // px: the reference panel's line height (see #gazeRef)
+const gazeClockText = ms => { const s = Math.round(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    document.head.append(el('script', { src, onload: res, onerror: () => rej(new Error('could not load ' + src)) }));
+  });
+}
+
+async function loadGazeScripts() {
+  if (window.GazeTracker && window.LookupMapper && window.GazeCalibrate) return;
+  await Promise.all(GAZE_FILES.map(loadScript));
+}
+
+async function ensureGazeTracker() {
+  if (gzTracker) return gzTracker;
+  const t = new GazeTracker({ video: gazeVideo, onGaze: gazeSample,
+    onStatus: m => { if (gz && gz.loading) fillBar(banner, { title: 'Writeout with eye tracking', text: m }, [['Cancel', gazeCancel, 'link']]); } });
+  await t.init();
+  if (!gz) { t.stop(); throw new Error('cancelled'); }   // Cancel was pressed while the camera was starting
+  gzTracker = t;
+  return t;
+}
+
+// One span per sentence of the target range. The mapper numbers them 0..n-1 in order (s); each also
+// keeps EasyEssay's own sentence index (es) and word range, so lookups can be written back per word.
+function gazeSentences(lo, hi) {
+  const out = [];
+  for (let i = lo; i <= hi; i++) {
+    const last = out[out.length - 1];
+    if (last && words[i].s === last.es) { last.hi = i; continue; }
+    out.push({ s: out.length, es: words[i].s, p: words[i].p, lo: i, hi: i });
+  }
+  out.forEach(sn => {
+    sn.text = tokText(sn.lo, sn.hi);
+    sn.words = [];
+    for (let i = sn.lo; i <= sn.hi; i++) if (words[i].key) sn.words.push(words[i].key);
+  });
+  return out;
+}
+
+function renderGazeRef(sents) {
+  gazeRef.textContent = '';
+  let p = -1, para = null;
+  sents.forEach(sn => {
+    if (sn.p !== p) {
+      p = sn.p;
+      if (essay.titles && essay.titles[p]) gazeRef.append(el('div', { className: 'ptitle', textContent: essay.titles[p] }));
+      para = el('p');
+      gazeRef.append(para);
+    }
+    sn.el = el('span', { className: 'sent', textContent: sn.text });
+    para.append(sn.el, ' ');
+  });
+}
+
+// Blur option: only the lines around the gaze stay sharp (or, with the gaze off the panel, the
+// sentence being written and its neighbours), so a lookup is a real lookup
+function gazeBlurUpdate(y, current) {
+  if (!gz || !blank.classList.contains('blur')) return;
+  const band = GAZE_LINE * 2.6;
+  gz.sents.forEach((sn, i) => {
+    let sharp = false;
+    if (y != null) { for (const r of sn.el.getClientRects()) if (r.bottom > y - band && r.top < y + band) { sharp = true; break; } }
+    else if (current != null) sharp = Math.abs(i - current) <= 1;
+    sn.el.classList.toggle('dim', !sharp);
+  });
+}
+
+// Every camera frame: feed the mapper, move the gaze dot, warn if the head has drifted
+function gazeSample(s) {
+  if (!gz || gz.paused || !gz.mapper) return;
+  gazeDot.classList.toggle('away', s.x == null);
+  if (s.x != null) { gazeDot.style.left = s.x + 'px'; gazeDot.style.top = s.y + 'px'; gazeDot.classList.toggle('fix', !!s.fix); }
+  gazeDrift.classList.toggle('on', s.drift > 1);
+  const cur = gz.mapper.onGaze(s);
+  const now = performance.now();
+  if (now - gz.blurAt > 120) {
+    gz.blurAt = now;
+    const m = gz.mapper;
+    gazeBlurUpdate(cur >= 0 ? (s.fix ? s.fix.y : s.y) : null, m.cursor != null ? m.cursor : (m.progress >= 0 ? m.progress : 0));
+  }
+}
+
+async function gazeRun() {
+  if (gz) return;
+  if (ladder) exitPractise();
+  stopLive();
+  if (exam) { exam = null; stopFocus(); }
+  const p = scope ? scope.p : null;
+  const t = blankTargets().find(x => x.id === (p == null ? 'all' : 'p' + p));
+  openBlank(t.id);
+  gz = { loading: true, target: t };
+  fillBar(banner, { title: 'Writeout with eye tracking', text: 'Loading…' }, [['Cancel', gazeCancel, 'link']]);
+  let tracker;
+  try {
+    await loadGazeScripts();
+    tracker = await ensureGazeTracker();
+  } catch (e) {
+    if (!gz) return;
+    gz = null;
+    const why = /denied|permission|notallowed/i.test(e.message || e.name || '') ? 'the camera was blocked. Allow it for this site and try again.'
+      : location.protocol === 'http:' && location.hostname !== 'localhost' ? 'the camera only works over https or localhost.' : (e.message || e) + '.';
+    fillBar(banner, 'Eye tracking could not start: ' + why, [['Close', () => { banner.hidden = true; }, 'link']]);
+    return;
+  }
+  if (!gz) return;
+  gz.loading = false;
+  banner.hidden = true;
+  gazeVideo.hidden = false;
+  gazeVideo.className = '';
+  const err = await GazeCalibrate.calibrate(tracker, { reusable: store.gazeModel });
+  if (!gz) return;
+  if (err == null) { gazeCancel(); return; }
+  store.gazeModel = tracker.exportModel();
+  saveStore();
+  gazeStart(t);
+}
+
+function gazeStart(t) {
+  gazeBlur.checked = opts.gazeBlur !== false;
+  gazeDotOpt.checked = !!opts.gazeDot;
+  gz.sents = gazeSentences(t.lo, t.hi);
+  renderGazeRef(gz.sents);
+  gz.cursorFrom = makeCursor(gz.sents);
+  gz.mapper = new LookupMapper({ panel: gazeRef, sentences: gz.sents,
+    onLook: () => { const n = gz.mapper.log.length; gazeLooks.textContent = n + (n === 1 ? ' lookup' : ' lookups'); },
+    onCurrent: s => { gz.sents.forEach((sn, i) => sn.el.classList.toggle('now', i === s)); } });
+  gz.mapper.setCursor(gz.cursorFrom(blankInput.value));
+  gz.started = performance.now();
+  gz.blurAt = 0;
+  gz.paused = false;
+  blank.classList.add('gaze');
+  blank.classList.toggle('blur', gazeBlur.checked);
+  gazeDot.classList.toggle('on', gazeDotOpt.checked);
+  gazeRef.hidden = false;
+  gazeBar.hidden = false;
+  gazeLooks.textContent = '0 lookups';
+  gazeClock.textContent = '0:00';
+  gazeDrift.classList.remove('on');
+  gazeVideo.className = 'mini';
+  gz.timer = setInterval(() => {
+    gazeClock.textContent = gazeClockText(performance.now() - gz.started);
+    gazeFps.textContent = gzTracker ? Math.round(gzTracker.fps) + ' fps' : '';
+  }, 1000);
+  gazeBlurUpdate(null, 0);
+  window.scrollTo(0, 0);
+  blankInput.focus();
+}
+
+// Called from Check: the writeout's lookups, counted as slips against the sentences' key words and
+// kept on the essay record as essay.looks. Returns what to say in the banner, or null outside the mode.
+function gazeFinish(t) {
+  if (!gz || !gz.mapper) return null;
+  const m = gz.mapper, sents = gz.sents;
+  m.finish();
+  const stats = m.stats();
+  const looked = stats.filter(s => s.looks > 0);
+  beginAction(false);
+  looked.forEach(s => {
+    const sn = sents[s.s];
+    for (let i = sn.lo; i <= sn.hi; i++) if (words[i].key) { wrong[i] += s.looks; setMissed(i, true); }
+  });
+  endAction(t.hi);
+  const rec = { at: Date.now(), target: t.id, mins: Math.round((performance.now() - gz.started) / 60000),
+    lookups: looked.map(s => ({ s: sents[s.s].es, looks: s.looks, time: s.time })), reading: Math.round(m.inPanelMs),
+    error: gzTracker && gzTracker.model ? gzTracker.model.error : null };
+  (essay.looks ||= []).push(rec);
+  if (essay.looks.length > 12) essay.looks.shift();
+  const said = 'Eye tracking: ' + m.log.length + (m.log.length === 1 ? ' lookup' : ' lookups') + ' across ' + looked.length + ' of ' + stats.length +
+    ' sentences, ' + gazeClockText(m.inPanelMs) + ' reading the reference.' + (looked.length ? ' Those sentences now count as slips.' : '');
+  let details = null;
+  if (looked.length) {
+    const box = el('div', { className: 'looks' });
+    [...looked].sort((a, b) => b.time - a.time || b.looks - a.looks).slice(0, 8).forEach(s =>
+      box.append(el('div', { className: 'line' }, el('span', { textContent: s.text }), el('b', { textContent: s.looks + '× · ' + (s.time / 1000).toFixed(1) + ' s' }))));
+    details = el('details', {}, el('summary', { textContent: 'What you looked up' }), box);
+  }
+  gazeStop();
+  return { said, details };
+}
+
+// End the eye-tracking session (the draft stays): camera off, panel away, fullscreen left
+function gazeStop() {
+  if (!gz && !gzTracker) return;
+  if (gz) { clearInterval(gz.timer); if (gz.mapper) gz.mapper.destroy(); }
+  gz = null;
+  if (gzTracker) { gzTracker.stop(); gzTracker = null; }
+  if (window.GazeCalibrate) GazeCalibrate.hide();
+  blank.classList.remove('gaze', 'blur');
+  gazeRef.hidden = true;
+  gazeRef.textContent = '';
+  gazeBar.hidden = true;
+  gazeDot.classList.remove('on');
+  gazeVideo.className = 'off';
+  gazeVideo.hidden = true;
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
+
+function gazeCancel() {
+  gazeStop();
+  banner.hidden = true;
+  setView('essay');
+}
+
+// One dot, two seconds: re-centre after shifting in the chair
+gazeFix.addEventListener('click', async () => {
+  if (!gz || gz.paused || !gzTracker || !gzTracker.model) return;
+  gz.paused = true;
+  const fix = await GazeCalibrate.quickFix(gzTracker);
+  if (!gz) return;
+  gz.mapper.rects = null;
+  gz.paused = false;
+  gazeFix.textContent = fix ? 'Fixed ' + Math.round(Math.hypot(fix.dx, fix.dy)) + ' px' : 'Quick fix';
+  setTimeout(() => { gazeFix.textContent = 'Quick fix'; }, 2500);
+  blankInput.focus();
+});
+
+gazeRecal.addEventListener('click', async () => {
+  if (!gz || gz.paused || !gzTracker) return;
+  gz.paused = true;
+  const old = gzTracker.exportModel();
+  gazeVideo.className = '';
+  const err = await GazeCalibrate.calibrate(gzTracker, {});
+  if (!gz) return;
+  if (err != null) { store.gazeModel = gzTracker.exportModel(); saveStore(); }
+  else if (!gzTracker.model && old) gzTracker.importModel(old);   // abandoned part-way: keep the old fit
+  gazeVideo.className = 'mini';
+  gz.mapper.rects = null;
+  gz.paused = false;
+  blankInput.focus();
+});
+
+gazeBlur.addEventListener('change', () => {
+  opts.gazeBlur = gazeBlur.checked;
+  saveStore();
+  blank.classList.toggle('blur', gazeBlur.checked);
+  if (!gazeBlur.checked) gazeRef.querySelectorAll('.dim').forEach(e => e.classList.remove('dim'));
+  else gazeBlurUpdate(null, gz && gz.mapper && gz.mapper.cursor != null ? gz.mapper.cursor : 0);
+});
+
+gazeDotOpt.addEventListener('change', () => {
+  opts.gazeDot = gazeDotOpt.checked;
+  saveStore();
+  gazeDot.classList.toggle('on', gazeDotOpt.checked);
 });
 
 /* ---------- practise ---------- */
@@ -3458,6 +3767,7 @@ function drillSentence(lo, hi) {
 function examRun() {
   if (ladder) exitPractise();
   stopLive();
+  gazeStop();
   const qs = essay.questions || [];
   exam = { q: qs.length ? qs[Math.floor(Math.random() * qs.length)] : '', started: Date.now() };
   startFocus(opts.timerMins, essay.subject);
@@ -3910,13 +4220,15 @@ modes.addEventListener('click', (e) => {
   const b = e.target.closest('[data-mode]');
   if (!b) return;
   modes.open = false;
-  if (view !== 'essay' && !['adapt', 'blank', 'exam', 'evidence', 'sheet'].includes(b.dataset.mode)) setView('essay');
+  if (view !== 'essay' && !['adapt', 'blank', 'gaze', 'exam', 'evidence', 'sheet'].includes(b.dataset.mode)) setView('essay');
   ({
     blank: () => {
       const p = scope ? scope.p : null;
       if (ladder) exitPractise();
+      gazeStop();
       openBlank(p == null ? 'all' : 'p' + p);
     },
+    gaze: gazeRun,
     exam: examRun,
     recite: startRecite,
     listen: startListen,
