@@ -44,7 +44,22 @@
   #ref p { margin: 0 0 1em; }
   #ref .sent { transition: filter .25s, opacity .25s; border-radius: 3px; }
   #session.blur #ref .sent.dim { filter: blur(5px); opacity: .55; }
-  #ref .sent.now { background: rgba(255, 140, 0, .38); box-shadow: 0 0 0 2px rgba(255, 140, 0, .38); }
+  #ref .w { border-radius: 3px; transition: background .12s; }
+  /* heat that stays: yellow glanced, orange looked, red stared or kept coming back */
+  .w.h1 { background: rgba(250, 204, 21, .32); }
+  .w.h2 { background: rgba(255, 140, 0, .42); }
+  .w.h3 { background: rgba(225, 45, 45, .5); }
+  .sent.h1 { border-bottom: 2px solid rgba(250, 204, 21, .8); }
+  .sent.h2 { border-bottom: 2px solid rgba(255, 140, 0, .9); }
+  .sent.h3 { border-bottom: 2px solid rgba(225, 45, 45, .9); }
+  #ref .w.hit { box-shadow: 0 0 0 2px rgba(225, 45, 45, .7); }
+  #session.paused #ref { opacity: .45; }
+  #pauseBtn.on { background: var(--warn); border-color: var(--warn); color: #fff; }
+  #keys { font-size: 12.5px; }
+  #flash { color: var(--accent); }
+  /* the gaze ring: where the tracker thinks you are looking, once you have held a look there */
+  #ring { position: fixed; border: 3px solid rgba(220, 40, 40, .85); background: rgba(220, 40, 40, .07); border-radius: 50%; pointer-events: none; z-index: 29; transform: translate(-50%, -50%); opacity: 0; transition: opacity .2s, left .15s, top .15s; }
+  #ring.on { opacity: 1; }
   #write { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   #typed { flex: 1; resize: none; font-size: 16px; }
   #paper { flex: 1; display: grid; place-items: center; color: var(--muted); text-align: center; }
@@ -77,7 +92,11 @@
     <label>Writing <select id="mode"><option value="typed">by typing here</option><option value="paper">on paper</option></select></label>
     <label>Text size <input id="fontPx" type="number" min="13" max="26" value="17" style="width:64px"> px</label>
     <label><input id="blurOpt" type="checkbox" checked> Blur the reference except where you are looking</label>
-    <label><input id="dotOpt" type="checkbox"> Show the gaze dot</label>
+    <label><input id="dotOpt" type="checkbox"> Show the raw gaze dot</label>
+  </div>
+  <div class="row">
+    <label>Hold a look for <input id="holdMs" type="number" min="200" max="2000" step="100" value="600" style="width:76px"> ms before it counts</label>
+    <label>Gaze circle <input id="ringPx" type="number" min="40" max="200" step="10" value="90" style="width:64px"> px across</label>
   </div>
   <div class="row">
     <button id="startBtn" class="btn primary">Calibrate and start</button>
@@ -98,23 +117,31 @@
     <span id="fps" class="muted"></span>
     <span id="drift">Head has moved — consider recalibrating</span>
     <span class="spacer"></span>
-    <button id="fixBtn" class="btn" title="Shifted in your chair? One dot re-centres the tracking">Quick fix</button>
-    <button id="recalBtn" class="btn">Recalibrate</button>
+    <span id="flash"></span>
+    <button id="pauseBtn" class="btn" title="Ctrl+P: ignore the camera until resumed">Pause</button>
+    <button id="undoBtn" class="btn" title="Ctrl+U: take back the last lookup">Undo look</button>
+    <button id="resetBtn" class="btn" title="Ctrl+R: clear every lookup so far">Reset</button>
+    <button id="fixBtn" class="btn" title="Ctrl+Q: shifted in your chair? One dot re-centres the tracking">Quick fix</button>
+    <button id="recalBtn" class="btn" title="Ctrl+C (with nothing selected)">Recalibrate</button>
     <button id="finishBtn" class="btn primary">Finish</button>
   </div>
+  <div id="keys" class="muted">Ctrl+P pause · Ctrl+U undo look · Ctrl+R reset · Ctrl+Q quick fix · Ctrl+C recalibrate · Ctrl+D gaze dot · Ctrl+B blur · Ctrl+Enter finish</div>
   <div id="main">
     <div id="ref"></div>
     <div id="write"><textarea id="typed" spellcheck="false" autocomplete="off" placeholder="Write the essay here from memory. Look up at the reference whenever you need to."></textarea></div>
   </div>
 </div>
 <div id="gazeDot"></div>
+<div id="ring"></div>
 
 <div id="report" class="page" hidden>
   <h1>What you looked up</h1>
   <p id="sumLine" class="muted"></p>
   <h2>Weakest sentences</h2>
   <div id="worst"></div>
-  <h2>The essay, shaded by how long you looked at each sentence <span class="muted small">(<span class="legend" style="background: rgba(var(--heat), .15)"></span> glance → <span class="legend" style="background: rgba(var(--heat), .75)"></span> stared)</span></h2>
+  <h2>Weak phrases <span class="muted small">(the exact words under your gaze)</span></h2>
+  <div id="phrases"></div>
+  <h2>The essay <span class="muted small">(<span class="legend" style="background: rgba(250, 204, 21, .32)"></span> glanced · <span class="legend" style="background: rgba(255, 140, 0, .42)"></span> looked · <span class="legend" style="background: rgba(225, 45, 45, .5)"></span> stared or came back; underline = the sentence)</span></h2>
   <div id="heat"></div>
   <h2>Timeline of lookups</h2>
   <div id="timeline"></div>
@@ -143,7 +170,7 @@ const ref = $('ref'), typed = $('typed');
 
 essayIn.value = saved.essay || '';
 essayIn.addEventListener('input', () => { saved.essay = essayIn.value; save(); });
-['mode', 'fontPx', 'blurOpt', 'dotOpt'].forEach(id => {
+['mode', 'fontPx', 'blurOpt', 'dotOpt', 'holdMs', 'ringPx'].forEach(id => {
   const n = $(id), k = n.type === 'checkbox' ? 'checked' : 'value';
   if (saved[id] != null) n[k] = saved[id];
   n.addEventListener('change', () => { saved[id] = n[k]; save(); });
@@ -182,14 +209,45 @@ async function calibrate(offerLast = true) {
 
 let sentences = [], mapper = null, cursorFrom = null, startedAt = 0, clockTimer = 0, lastTyped = '';
 let lineH = 28;
+let paused = false, pausedAt = 0, pausedMs = 0;
+const ring = $('ring');
+const elapsed = () => performance.now() - startedAt - pausedMs - (paused ? performance.now() - pausedAt : 0);
+
+function flash(msg) { $('flash').textContent = msg; clearTimeout(flash.t); flash.t = setTimeout(() => { $('flash').textContent = ''; }, 1800); }
+
+function setPaused(p) {
+  if (p === paused) return;
+  paused = p;
+  if (p) pausedAt = performance.now(); else pausedMs += performance.now() - pausedAt;
+  mapper && mapper.setPaused(p);
+  session.classList.toggle('paused', p);
+  $('pauseBtn').textContent = p ? 'Resume' : 'Pause';
+  $('pauseBtn').classList.toggle('on', p);
+  ring.classList.remove('on');
+  flash(p ? 'Paused: the camera is ignored' : 'Tracking again');
+}
+
+function undoLook() {
+  if (!mapper) return;
+  const u = mapper.undoLast();
+  mapper.paint();
+  flash(u ? 'Took back the look at sentence ' + u.s.map(i => i + 1).join(', ') : 'Nothing to undo');
+}
+
+function resetLooks() {
+  if (!mapper) return;
+  if (mapper.log.length && !confirm('Clear every lookup from this writeout so far?')) return;
+  mapper.resetAll();
+  mapper.paint();
+  flash('Lookups cleared');
+}
 
 function renderRef(container, sents) {
   container.textContent = '';
   let p = -1, para = null;
   sents.forEach(sn => {
     if (sn.p !== p) { p = sn.p; para = el('p'); container.append(para); }
-    sn.el = el('span', { className: 'sent', textContent: sn.text });
-    para.append(sn.el, ' ');
+    para.append(renderSentence(sn, el), ' ');
   });
 }
 
@@ -239,14 +297,29 @@ function runSession(text) {
   lastTyped = '';
   cursorFrom = makeCursor(sentences);
   if (mapper) mapper.destroy();
+  let lastHits = [];
   mapper = new LookupMapper({
     panel: ref, sentences,
-    onLook: () => { $('lookCount').textContent = mapper.log.length + ' lookup' + (mapper.log.length === 1 ? '' : 's'); },
-    onCurrent: s => { sentences.forEach((sn, i) => sn.el.classList.toggle('now', i === s)); },
+    holdMs: +$('holdMs').value || 600,
+    ringR: (+$('ringPx').value || 90) / 2,
+    onLook: () => { $('lookCount').textContent = mapper.log.length + ' lookup' + (mapper.log.length === 1 ? '' : 's'); mapper.paint(); },
+    onRing: r => {
+      lastHits.forEach(w => w.classList.remove('hit'));
+      lastHits = r ? r.hits : [];
+      lastHits.forEach(w => w.classList.add('hit'));
+      if (r) { ring.style.left = r.x + 'px'; ring.style.top = r.y + 'px'; ring.style.width = ring.style.height = r.r * 2 + 'px'; }
+      ring.classList.toggle('on', !!r);
+    },
   });
+  paused = false;
+  pausedMs = 0;
+  $('pauseBtn').textContent = 'Pause';
+  $('pauseBtn').classList.remove('on');
+  session.classList.remove('paused');
+  $('lookCount').textContent = '0 lookups';
   startedAt = performance.now();
   clearInterval(clockTimer);
-  clockTimer = setInterval(() => { $('clock').textContent = clock(performance.now() - startedAt); $('fps').textContent = Math.round(gaze.fps) + ' fps'; }, 1000);
+  clockTimer = setInterval(() => { $('clock').textContent = clock(elapsed()); $('fps').textContent = Math.round(gaze.fps) + ' fps'; }, 1000);
   let blurTick = 0;
   onGaze = s => {
     gazeDot.classList.toggle('away', s.x == null);
@@ -255,6 +328,7 @@ function runSession(text) {
       gazeDot.classList.toggle('fix', !!s.fix);
     }
     $('drift').style.display = s.drift > 1 ? 'inline' : 'none';
+    if (paused) return;
     const cur = mapper.onGaze(s);
     if (performance.now() - blurTick > 120) {
       blurTick = performance.now();
@@ -293,25 +367,46 @@ $('recalBtn').addEventListener('click', async () => {
 });
 
 function runSessionKeeping(text, draft, old) {
-  const time = old.time, looks = old.looks, log = old.log, started = startedAt;
+  const time = old.time, looks = old.looks, log = old.log, started = startedAt, pm = pausedMs;
+  const wordMs = [];
+  old.sentences.forEach((sn, i) => (sn.wordEls || []).forEach((w, k) => { const ms = old.wordTime.get(w); if (ms) wordMs.push([i, k, ms]); }));
   runSession(text);
   mapper.time = time; mapper.looks = looks; mapper.log = log; mapper.started = old.started;
+  wordMs.forEach(([i, k, ms]) => { const w = sentences[i] && sentences[i].wordEls[k]; if (w) mapper.wordTime.set(w, ms); });
+  mapper.paint();
   startedAt = started;
+  pausedMs = pm;
   typed.value = draft;
   mapper.setCursor(cursorFrom(draft));
   $('lookCount').textContent = log.length + ' lookup' + (log.length === 1 ? '' : 's');
 }
 
 $('finishBtn').addEventListener('click', finishSession);
+$('pauseBtn').addEventListener('click', () => setPaused(!paused));
+$('undoBtn').addEventListener('click', undoLook);
+$('resetBtn').addEventListener('click', resetLooks);
+
+// Keyboard shortcuts during a writeout. Ctrl+C still copies when text is selected in the writing box.
+addEventListener('keydown', e => {
+  if (session.hidden || !(e.ctrlKey || e.metaKey) || e.altKey) return;
+  const k = e.key.toLowerCase();
+  const selecting = document.activeElement === typed && typed.selectionStart !== typed.selectionEnd;
+  const act = { p: () => setPaused(!paused), u: undoLook, r: resetLooks, q: () => $('fixBtn').click(), d: () => { $('dotOpt').checked = !$('dotOpt').checked; gazeDot.classList.toggle('on', $('dotOpt').checked); saved.dotOpt = $('dotOpt').checked; save(); },
+    b: () => { $('blurOpt').checked = !$('blurOpt').checked; session.classList.toggle('blur', $('blurOpt').checked); saved.blurOpt = $('blurOpt').checked; save(); updateBlur(null, mapper.cursor != null ? mapper.cursor : Math.max(0, mapper.progress)); },
+    c: () => { if (!selecting) $('recalBtn').click(); else return false; }, enter: finishSession }[k];
+  if (!act) return;
+  if (act() === false) return;
+  e.preventDefault();
+});
 
 function finishSession() {
   onGaze = () => {};
   clearInterval(clockTimer);
   mapper.finish();
   const stats = mapper.stats();
-  const total = performance.now() - startedAt;
+  const total = elapsed();
   const rec = { at: Date.now(), duration: Math.round(total), mode: $('mode').value, words: essayIn.value.trim().split(/\s+/).length,
-    typed: typed.value, lookups: mapper.log, sentences: stats, inPanelMs: Math.round(mapper.inPanelMs), calibrationError: gaze.model && gaze.model.error };
+    typed: typed.value, lookups: mapper.log.map(l => ({ t: l.t, dur: l.dur, s: l.s })), sentences: stats, inPanelMs: Math.round(mapper.inPanelMs), calibrationError: gaze.model && gaze.model.error };
   saved.sessions = [rec, ...(saved.sessions || [])].slice(0, 30);
   save();
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -324,23 +419,37 @@ function finishSession() {
 function showReport(rec) {
   show(report);
   const stats = rec.sentences;
-  const maxT = Math.max(1, ...stats.map(s => s.time));
   const looked = stats.filter(s => s.looks > 0);
   $('sumLine').textContent = clock(rec.duration) + ' writing · ' + rec.lookups.length + ' lookups · ' + looked.length + ' of ' + stats.length + ' sentences looked up · ' + clock(rec.inPanelMs) + ' spent reading the reference' + (rec.calibrationError ? ' · calibration error ' + Math.round(rec.calibrationError) + ' px' : '');
   const worst = $('worst');
   worst.textContent = '';
-  const ranked = [...stats].filter(s => s.time > 150).sort((a, b) => b.time - a.time || b.looks - a.looks).slice(0, 8);
+  const TIER = ['', 'glanced', 'looked', 'stared'];
+  const tierOf = s => s.tier != null ? s.tier : LookupMapper.tier(s.time, s.looks);
+  const ranked = [...stats].filter(s => s.time > 150).sort((a, b) => tierOf(b) - tierOf(a) || b.time - a.time || b.looks - a.looks).slice(0, 10);
   if (!ranked.length) worst.append(el('p', { className: 'muted', textContent: 'You never looked at the reference. Either you know it, or the gaze never landed on the panel — turn the gaze dot on next time to check.' }));
-  ranked.forEach(s => worst.append(el('div', { className: 'line' },
-    el('span', { textContent: s.text }),
-    el('b', { textContent: s.looks + '× · ' + (s.time / 1000).toFixed(1) + ' s' }))));
+  ranked.forEach(s => {
+    const line = el('div', { className: 'line' }, el('span', {}, el('span', { className: 'w h' + tierOf(s), textContent: TIER[tierOf(s)] }), ' ', s.text),
+      el('b', { textContent: s.looks + '× · ' + (s.time / 1000).toFixed(1) + ' s' }));
+    worst.append(line);
+  });
+  // the phrases: runs of words that sat under the ring, worst first
+  const ph = $('phrases');
+  ph.textContent = '';
+  const phrases = stats.flatMap(s => (s.phrases || []).map(q => ({ ...q, s: s.s }))).sort((a, b) => b.ms - a.ms).slice(0, 15);
+  if (!phrases.length) ph.append(el('p', { className: 'muted', textContent: 'No phrases held long enough to count.' }));
+  phrases.forEach(q => ph.append(el('div', { className: 'line' }, el('span', {}, el('span', { className: 'w h' + LookupMapper.tier(q.ms), textContent: '…' + q.text + '…' }), ' ', el('span', { className: 'muted small', textContent: 'sentence ' + (q.s + 1) })), el('b', { textContent: (q.ms / 1000).toFixed(1) + ' s' }))));
   const heat = $('heat');
   heat.textContent = '';
   let p = -1, para = null;
   stats.forEach(s => {
     if (s.p !== p) { p = s.p; para = el('p'); heat.append(para); }
-    const a = s.time ? 0.12 + 0.68 * Math.sqrt(s.time / maxT) : 0;
-    para.append(el('span', { className: 'sent', textContent: s.text, title: s.looks + ' lookups, ' + (s.time / 1000).toFixed(1) + ' s', style: a ? 'background: rgba(var(--heat), ' + a.toFixed(2) + ')' : '' }), ' ');
+    const span = el('span', { className: 'sent' + (tierOf(s) ? ' h' + tierOf(s) : ''), title: s.looks + ' lookups, ' + (s.time / 1000).toFixed(1) + ' s' });
+    const toks = s.text.split(/\s+/);
+    toks.forEach((tok, k) => {
+      const ms = s.words ? s.words[k] || 0 : 0, wt = LookupMapper.tier(ms);
+      span.append(el('span', { className: 'w' + (wt ? ' h' + wt : ''), textContent: tok, title: ms ? (ms / 1000).toFixed(1) + ' s' : '' }), ' ');
+    });
+    para.append(span, ' ');
   });
   const tl = $('timeline');
   tl.textContent = '';
@@ -352,7 +461,8 @@ function showReport(rec) {
   };
   $('copyBtn').onclick = () => {
     const lines = ['Writeout ' + new Date(rec.at).toLocaleString() + ': ' + rec.lookups.length + ' lookups in ' + clock(rec.duration), ''];
-    ranked.forEach(s => lines.push('- (' + s.looks + 'x, ' + (s.time / 1000).toFixed(1) + 's) ' + s.text));
+    ranked.forEach(s => lines.push('- [' + TIER[tierOf(s)] + ' ' + s.looks + 'x, ' + (s.time / 1000).toFixed(1) + 's] ' + s.text));
+    if (phrases.length) { lines.push('', 'Phrases:'); phrases.forEach(q => lines.push('- ' + q.text + ' (' + (q.ms / 1000).toFixed(1) + 's)')); }
     navigator.clipboard.writeText(lines.join('\n')).then(() => { $('copyBtn').textContent = 'Copied'; setTimeout(() => { $('copyBtn').textContent = 'Copy summary'; }, 1200); });
   };
   drawHistory();

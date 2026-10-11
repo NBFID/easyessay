@@ -25,6 +25,10 @@
     left: { outer: 263, inner: 362, top: 386, bottom: 374, iris: 473 },
   };
 
+  // feature-row indices that describe the eyes alone (not the head), for the local correction
+  const RBF_FEATURES = [1, 2, 3, 4, 5, 6, 10, 11, 12];
+  const REGION_R = 110;   // px: a look that wanders less than this is one dwell
+
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   const median = arr => { const s = [...arr].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 
@@ -131,8 +135,11 @@
       if (!lm) { this.lastFeatures = null; this.onGaze({ t, x: null, y: null, fix: null, blink: false, face: false, drift: 0 }); return; }
       const f = this._features(lm, result.facialTransformationMatrixes && result.facialTransformationMatrixes[0], v.videoWidth, v.videoHeight);
       this.lastFeatures = f;
-      if (f.blink) { this.onGaze({ t, x: null, y: null, fix: this.fix, blink: true, face: true, drift: this._drift(f) }); return; }
-      if (this.collecting) this.collecting.rows.push(f.row);
+      // A blink, and the few frames after it while the lid settles and the iris landmark wanders
+      if (f.blink) this.blinkCool = 4;
+      else if (this.blinkCool > 0) this.blinkCool--;
+      if (f.blink || this.blinkCool > 0) { this.onGaze({ t, x: null, y: null, fix: this.fix, region: this.region, blink: true, face: true, drift: this._drift(f) }); return; }
+      if (this.collecting) { this.collecting.rows.push(f.row); this.collecting.ears.push(f.ear); }
       if (!this.model) { this.onGaze({ t, x: null, y: null, fix: null, blink: false, face: true, drift: 0 }); return; }
       const p = this._predict(f.row);
       this._emit(t, p.x, p.y, f);
@@ -189,12 +196,47 @@
     _predict(row) {
       const m = this.model;
       let x = m.bias ? m.bias.x : 0, y = m.bias ? m.bias.y : 0;
+      const zs = new Array(row.length);
       for (let i = 0; i < row.length; i++) {
         const z = i === 0 ? 1 : (row[i] - m.mean[i]) / m.std[i];
+        zs[i] = z;
         x += z * m.wx[i];
         y += z * m.wy[i];
       }
+      const R = m.rbf;
+      if (R) {
+        // local correction: how wrong the global fit was at the nearest calibration dots
+        x += R.wx[0]; y += R.wy[0];
+        for (let k = 0; k < R.centres.length; k++) {
+          const c = R.centres[k];
+          let d2 = 0;
+          for (let j = 0; j < RBF_FEATURES.length; j++) { const e = zs[RBF_FEATURES[j]] - c[j]; d2 += e * e; }
+          const phi = Math.exp(-d2 / (2 * R.bw * R.bw));
+          x += phi * R.wx[k + 1]; y += phi * R.wy[k + 1];
+        }
+      }
       return { x, y };
+    }
+
+    // A quadratic in the eye features cannot bend enough at the top and bottom rows, where the
+    // lids and iris behave differently. Radial basis functions centred on each still dot soak up
+    // what the global fit gets wrong there, and fade back to the global fit between dots.
+    _fitResidualRbf(still, z, w, predictWith) {
+      if (still.length < 6) return null;
+      const centres = [], rx = [], ry = [];
+      for (const p of still) {
+        const Zs = p.rows.map(z);
+        const c = RBF_FEATURES.map(i => Zs.reduce((s, r) => s + r[i], 0) / Zs.length);
+        const pr = Zs.map(r => predictWith(w, r));
+        centres.push(c);
+        rx.push(p.x - median(pr.map(q => q.x)));
+        ry.push(p.y - median(pr.map(q => q.y)));
+      }
+      const dists = [];
+      for (let a = 0; a < centres.length; a++) for (let b = a + 1; b < centres.length; b++) dists.push(Math.hypot(...centres[a].map((v, j) => v - centres[b][j])));
+      const bw = (median(dists) || 1) * 0.7;
+      const Phi = centres.map(ca => [1, ...centres.map(cb => Math.exp(-centres[0].reduce((s, _, j) => s + (ca[j] - cb[j]) ** 2, 0) / (2 * bw * bw)))]);
+      return { centres, bw, wx: [...ridge(Phi, rx, 0.5)], wy: [...ridge(Phi, ry, 0.5)] };
     }
 
     // One-dot drift correction: shift the model so its prediction for the samples just collected
@@ -220,17 +262,22 @@
       this.history.push({ x: rx, y: ry });
       if (this.history.length > 9) this.history.shift();
       const rawX = median(this.history.map(p => p.x)), rawY = median(this.history.map(p => p.y));
-      // tested on the unsmoothed frame so it reacts in ~100 ms; the frame counts stop single noisy frames flipping it
-      const mx = 0.15 * W, my = 0.15 * H;
+      // Position is tested on the median (single frames at the bottom row stray far enough to look
+      // like the desk); the lid test is relative to how closed the lids were on the lowest
+      // calibration dots, so reading the last lines never counts as looking down.
+      const mx = 0.2 * W, my = 0.2 * H;
       const dPitch = this.model.head ? Math.abs(f.head[1] - this.model.head[1]) : 0;
-      const awayNow = rx < -mx || rx > W + mx || ry < -my || ry > H + my || f.ear < 0.2 || dPitch > 0.3;
+      const droop = this.model.earMin ? Math.min(0.2, this.model.earMin * 0.8) : 0.17;
+      const recent = this.history.slice(-5);
+      const qx = median(recent.map(p => p.x)), qy = median(recent.map(p => p.y));   // a shorter median: reacts in ~200 ms
+      const awayNow = qx < -mx || qx > W + mx || qy < -my || qy > H + my || f.ear < droop || dPitch > 0.3;
       this.awayFrames = awayNow ? (this.awayFrames || 0) + 1 : 0;
       this.hereFrames = awayNow ? 0 : (this.hereFrames || 0) + 1;
       if (!this.away && this.awayFrames >= 3) this.away = true;
       if (this.away && this.hereFrames >= 4) { this.away = false; this.history = this.history.slice(-3); this.smooth = null; this.fix = null; this.fixWin = []; }
       if (this.away) {
-        this.fix = null; this.fixWin = [];
-        this.onGaze({ t, x: null, y: null, fix: null, blink: false, face: true, away: true, drift: this._drift(f) });
+        this.fix = null; this.fixWin = []; this.region = null;
+        this.onGaze({ t, x: null, y: null, fix: null, region: null, blink: false, face: true, away: true, drift: this._drift(f) });
         return;
       }
       // Per-frame predictions are noisy (a couple of hundred px); a longer median and a slower
@@ -261,7 +308,13 @@
       }
       // edge: the raw point was outside the viewport and got clamped, so it should not count as reading
       const edge = rawX < 0 || rawX > W || rawY < 0 || rawY > H;
-      this.onGaze({ t, x, y, fix: this.fix, blink: false, face: true, away: false, edge, drift: this._drift(f) });
+      // The dwell region: a slow centroid that follows the gaze while it stays roughly in one
+      // place (reading a few lines), and restarts when it jumps. Pages show the circle and count
+      // reading only once region.dur has passed their hold time.
+      const rg = this.region;
+      if (!rg || Math.hypot(x - rg.x, y - rg.y) > REGION_R * 1.4) this.region = { x, y, start: t, dur: 0, r: REGION_R };
+      else { rg.x += 0.12 * (x - rg.x); rg.y += 0.12 * (y - rg.y); rg.dur = t - rg.start; }
+      this.onGaze({ t, x, y, fix: this.fix, region: this.region, blink: false, face: true, away: false, edge, drift: this._drift(f) });
     }
 
     // How far the head is from where it was during calibration, 0..1+ (1 ≈ should recalibrate)
@@ -278,7 +331,7 @@
     /* ---- calibration ---- */
 
     // moving: the head is meant to move while this dot is looked at, so keep every frame
-    collect(x, y, { moving = false } = {}) { this.collecting = { x, y, rows: [], moving }; }
+    collect(x, y, { moving = false } = {}) { this.collecting = { x, y, rows: [], ears: [], moving }; }
 
     // Returns how many frames were kept for the dot
     stopCollecting() {
@@ -293,7 +346,9 @@
         const scored = c.rows.map(r => ({ r, d: Math.hypot(r[5] - mh, r[6] - mv) })).sort((a, b) => a.d - b.d);
         keep = scored.slice(0, Math.max(5, Math.ceil(scored.length * 0.75))).map(s => s.r);
       }
-      this.points.push({ x: c.x, y: c.y, rows: keep, moving: c.moving });
+      // how far the lids closed while looking here: the lowest dots set the "looking down" threshold
+      const ears = [...c.ears].sort((a, b) => a - b);
+      this.points.push({ x: c.x, y: c.y, rows: keep, moving: c.moving, ear: ears[Math.floor(ears.length * 0.1)] || 0.25 });
       return keep.length;
     }
 
@@ -332,10 +387,14 @@
       }
       const w = fitOn(pts.map((_, i) => i), best.lambda);
       // the resting head pose, for the drift warning: only the dots looked at with a still head
-      const headRows = pts.filter(p => !p.moving).flatMap(p => p.rows).map(r => r.slice(-6));
+      const still = pts.filter(p => !p.moving);
+      const headRows = still.flatMap(p => p.rows).map(r => r.slice(-6));
       const head = headRows[0].map((_, j) => headRows.reduce((s, r) => s + r[j], 0) / headRows.length);
       const headScale = Math.max(1, Math.abs(head[5]) * 0.08);   // a few percent of the distance to the camera
-      this.model = { mean, std, wx: w.wx, wy: w.wy, head, headScale, error: best.err, lambda: best.lambda, at: Date.now(), w: innerWidth, h: innerHeight };
+      // lids are lowest when looking at the bottom row; "looking away" has to be clearly below that
+      const earMin = Math.min(...still.map(p => p.ear));
+      this.model = { mean, std, wx: w.wx, wy: w.wy, head, headScale, earMin, error: best.err, lambda: best.lambda, at: Date.now(), w: innerWidth, h: innerHeight };
+      this.model.rbf = this._fitResidualRbf(still, z, w, predictWith);
       this.history = []; this.smooth = null; this.fix = null; this.fixWin = [];
       return { error: Math.round(best.err), lambda: best.lambda, points: pts.length };
     }

@@ -26,14 +26,21 @@ then open http://localhost:8787/gaze/
    look. Under about 80 px is good; over 150 px, redo it with the room lit from the front.
    The frame-to-frame figure is always larger; it is the raw jitter the smoothing removes.
 3. **Writeout.** The reference sits on the left, the writing box on the right (or the reference
-   fills the screen in paper mode). Write. Whenever you look up, the sentence under your gaze
-   highlights in orange and collects dwell time. The top bar shows elapsed time, lookups so far
-   and a warning if your head has moved far from where it was calibrated. **Quick fix** is one
-   dot and two seconds: it re-centres the tracking after you have shifted in your chair.
-   Recalibrate redoes the whole thing; the tallies and your draft are kept either way.
-4. **Report.** The weakest sentences ranked by how long and how often you looked at them, the
-   whole essay shaded as a heat map, and a timeline of lookups. Download the JSON or copy the
-   summary. The last 30 sessions stay in the browser under "Past writeouts".
+   fills the screen in paper mode). Write. When you look up and your gaze settles somewhere for
+   the hold time (600 ms by default), a red circle appears there and the words inside it are
+   what gets counted. Words you read stay tinted: yellow for a glance, orange for a proper look,
+   red for a stare or a sentence you keep coming back to; the sentence gets an underline in the
+   same colour. Nothing shows for a glance shorter than the hold time, a blink, or a look away.
+   The top bar has **Pause** (the camera is ignored until you resume), **Undo look** (takes back
+   the last lookup, for when you glanced at it by accident), **Reset** (clears every lookup),
+   **Quick fix** (one dot, two seconds, re-centres the tracking after you have shifted in your
+   chair) and **Recalibrate**. Hold time and circle size are adjustable on the setup page.
+   Keyboard: Ctrl+P pause, Ctrl+U undo, Ctrl+R reset, Ctrl+Q quick fix, Ctrl+C recalibrate (it
+   still copies when text is selected), Ctrl+D gaze dot, Ctrl+B blur, Ctrl+Enter finish.
+4. **Report.** The weakest sentences ranked by tier and time, the exact phrases that sat under
+   the circle, the whole essay with every word tinted by how long you looked at it, and a
+   timeline of lookups. Download the JSON or copy the summary. The last 30 sessions stay in the
+   browser under "Past writeouts".
 
 A calibration is saved and can be reused next time if the window is the same size, but the
 camera angle, your chair and your posture all shift, so recalibrating per session is the
