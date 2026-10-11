@@ -18,7 +18,7 @@
 
 (() => {
   const CSS = `
-  .gz-cal { position: fixed; inset: 0; z-index: 1000; background: var(--bg, #fff); color: var(--ink, var(--fg, #1b1b1b)); cursor: crosshair; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .gz-cal { position: fixed; inset: 0; z-index: 1200; background: var(--bg, #fff); color: var(--ink, var(--fg, #1b1b1b)); cursor: crosshair; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
   .gz-cal[hidden] { display: none; }
   .gz-cal .gz-msg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); text-align: center; max-width: 520px; padding: 0 16px; cursor: default; }
   .gz-cal .gz-msg p { margin: 6px 0; }
@@ -232,15 +232,21 @@
     const avg = k => Math.round(scored.reduce((a, b) => a + b[k], 0) / scored.length);
     const e = scored.length ? avg('steady') : fit.error, frame = scored.length ? avg('frame') : e;
     gaze.model.error = e;
-    const lineH = 28, lines = Math.round(innerHeight / lineH);
+    const lineH = 36, lines = Math.round(innerHeight / lineH);   // the reference's line height
     const verdict = e < 80 ? 'Good: about ' + Math.max(1, Math.round(e / lineH)) + ' lines of text when you hold a look.' : e < 150 ? 'Usable: a look lands within ' + Math.round(e / lineH) + ' lines or so, and your typing position sorts out which sentence.' : 'Rough: lighting, glasses glare or a moving head make this hard. Try again with the room lit from the front, and sit still through the dots.';
     const rows = byRow(scored);
     const rowLine = rows.length ? '<p class="gz-muted">By row: ' + rows.map(r => r.name + ' ' + r.error + ' px').join(' · ') + (rows.some(r => r.error > e * 1.6 && r.error > 100) ? ' — the weak row is where looks will land a line or two out' : '') + '</p>' : '';
     const pickLine = pick ? '<p class="gz-muted">' + ({ none: 'The plain fit did best on the check dots; no local correction', both: 'Local correction from both eyes together', eyes: 'Local correction fitted per eye' })[pick.chosen] +
       ' (' + Object.keys(pick.errors).map(k => ({ none: 'none', both: 'both', eyes: 'per eye' })[k] + ' ' + pick.errors[k]).join(', ') + ' px).' + (fit.headFit ? '' : ' Head movement did not help the fit and was left out.') + '</p>' : '';
     const again = await prompt('<p><b>Error when holding a look: ' + e + ' px</b> <span class="gz-muted">(' + frame + ' px frame to frame; the screen is ' + lines + ' lines tall)</span></p><p>' + verdict + '</p>' + rowLine + pickLine +
-      '<p class="gz-muted">Click to continue, press T to test the accuracy on five targets, R to redo, or Esc to cancel.</p>', ['r', 't']);
+      '<p class="gz-muted">Click to continue, press T to test the accuracy on five targets, R to redo, D to save the calibration data for a closer look, or Esc to cancel.</p>', ['r', 't', 'd']);
     if (again === 'escape') { hide(); return null; }
+    if (again === 'd') {
+      saveData(gaze, { fit, pick, errs: scored });
+      const k2 = await prompt('<p>Saved. The file has every calibration frame, so the fit can be tried other ways offline.</p><p class="gz-muted">Click to continue, R to redo, or Esc to cancel.</p>', ['r']);
+      if (k2 === 'escape') { hide(); return null; }
+      if (k2 === 'r') return calibrate(gaze, { reusable: null, fullscreen });
+    }
     if (again === 'r') return calibrate(gaze, { reusable: null, fullscreen });
     remember(gaze);
     if (again === 't') {
@@ -309,6 +315,21 @@
     if (r === 'r') { if (!keepOpen) hide(); return { redo: true }; }
     if (!keepOpen) hide();
     return { targets: got, rows, cols, error };
+  }
+
+  // Every frame of the calibration (features, targets, head pose) and the check dots, as a JSON
+  // download, so the fit can be re-run offline with different choices against real eyes
+  function saveData(gaze, extra) {
+    try {
+      const data = { at: Date.now(), w: innerWidth, h: innerHeight, ua: navigator.userAgent, ...extra,
+        model: gaze.model && { error: gaze.model.error, lambda: gaze.model.lambda, correction: gaze.model.correction, headFit: gaze.model.headFit, head: gaze.model.head, headRange: gaze.model.headRange },
+        points: gaze.points.map(p => ({ x: p.x, y: p.y, moving: !!p.moving, pursuit: !!p.pursuit, ear: p.ear, rows: p.rows, tx: p.tx, ty: p.ty })),
+        checks: (gaze.checks || []).map(c => ({ x: c.x, y: c.y, rows: c.rows })) };
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+      a.download = 'calibration-' + new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-') + '.json';
+      a.click();
+    } catch (e) { console.warn('could not save the calibration data', e); }
   }
 
   // One copy of the calibration for every page on this site, so the standalone page and
