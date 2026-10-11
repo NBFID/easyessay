@@ -39,13 +39,14 @@
   // Smoothing and dwell tuning, exposed so a test can sweep them (see test/noise.js)
   const TUNE = {
     MED_N: 9,          // frames in the median filter
-    EMA_A: 0.22,       // exponential average weight once settled
-    JUMP: 200,         // px: a move bigger than this is a saccade, followed quickly
+    EMA_A: 0.15,       // exponential average weight once settled
+    JUMP: 150,         // px: a move bigger than this is a saccade, followed quickly
     JUMP_A: 0.7,
     DISP: 120,         // px: dispersion (x range + y range) under which the point is a fixation
     FIX_MS: 100,       // ms before a steady point counts as a fixation
     REGION_R: 110,     // px: a look that wanders less than this is one dwell
     REGION_RESTART: 1.4,   // × REGION_R: a move this far restarts the dwell
+    REGION_WX: 2.5,        // the restart distance is this many times wider sideways (reading sweeps along a line)
     REGION_RATE: 0.12,     // how fast the dwell centroid follows the gaze
   };
 
@@ -416,7 +417,8 @@
       // place (reading a few lines), and restarts when it jumps. Pages show the circle and count
       // reading only once region.dur has passed their hold time.
       const rg = this.region;
-      if (!rg || Math.hypot(x - rg.x, y - rg.y) > TUNE.REGION_R * TUNE.REGION_RESTART) this.region = { x, y, start: t, dur: 0, r: TUNE.REGION_R };
+      const far = rg && Math.hypot((x - rg.x) / TUNE.REGION_WX, y - rg.y) > TUNE.REGION_R * TUNE.REGION_RESTART;
+      if (!rg || far) this.region = { x, y, start: t, dur: 0, r: TUNE.REGION_R };
       else { rg.x += TUNE.REGION_RATE * (x - rg.x); rg.y += TUNE.REGION_RATE * (y - rg.y); rg.dur = t - rg.start; }
       this.onGaze({ t, x, y, fix: this.fix, region: this.region, blink: false, face: true, away: false, edge, drift: this._drift(f), head: f.head, ear: f.ear });
     }

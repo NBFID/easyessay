@@ -6,7 +6,7 @@
 // it. The best sentence collects that frame's dwell time. A "look" is one visit to the panel
 // (gaze arrives, stays a while, leaves), and each sentence read during it gets a lookup.
 //
-//   const map = new LookupMapper({ panel, sentences, onLook });
+//   const map = new LookupMapper({ panel, sentences, onLook, errorPx: gaze.model.error });
 //   map.setCursor(sentenceIndex)   // from the typed text (see cursorFromTyping) or null if writing on paper
 //   map.onGaze(sample)             // from GazeTracker
 //   map.stats()                    // [{ s, time, looks, tier, words, phrases }]
@@ -15,15 +15,20 @@
 // sentences: [{ el, s, p, text }] where el is the span holding sentence s of paragraph p.
 
 (() => {
-  const SIGMA_X = 160;   // px: horizontal gaze error is forgiven generously (sentences wrap anyway)
-  const SIGMA_Y = 60;    // px: vertical error, two to three lines of text
-  const PANEL_PAD = 24;  // px: once reading, gaze this far outside the panel still counts as being in it
-  const LEAVE_MS = 900;  // gaze off the panel (or not settled) for this long ends a look
-  const HOLD_MS = 600;   // default: the gaze has to settle in one place this long before it counts
-  const ENTER_MS = 120;  // gaze must stay on the panel this long before it counts as reading
-  const SWITCH_MS = 160; // a different sentence must win for this long before the highlight moves
-  const MIN_LOOK = 180;  // ms of dwell on a sentence within one look before it counts as a lookup
-  const PRIOR_SD = 2.0;  // sentences: how far from the cursor a lookup is still expected
+  // Tuning, exposed as LookupMapper.TUNE so a test can sweep it (see test/noise.js)
+  const TUNE = {
+    SIGMA_X: 160,   // px: horizontal gaze error is forgiven generously (sentences wrap anyway)
+    SIGMA_Y: 50,    // px: vertical error, about two lines; a mapper built with errorPx scales it to the calibration
+    PANEL_PAD: 24,  // px: once reading, gaze this far outside the panel still counts as being in it
+    LEAVE_MS: 900,  // gaze off the panel (or not settled) for this long ends a look
+    HOLD_MS: 600,   // default: the gaze has to settle in one place this long before it counts
+    ENTER_MS: 120,  // gaze must stay on the panel this long before it counts as reading
+    SWITCH_MS: 300, // a different sentence must win for this long before the highlight moves
+    MIN_LOOK: 300,  // ms of dwell on a sentence within one look before it counts as a lookup
+    PRIOR_SD: 4.0,  // sentences: how far from the cursor a lookup is still expected
+    STICK: 0.6,     // score margin a different sentence must win by before it takes the highlight
+    STICK_AFTER: 400, // ms a highlight has to have held before that margin protects it
+  };
 
   const normalise = s => s.toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]/gu, '');
 
@@ -93,9 +98,11 @@
   }
 
   class LookupMapper {
-    constructor({ panel, sentences, onLook, onCurrent, onRing, holdMs = HOLD_MS, ringR = 45, inset = {} }) {
+    constructor({ panel, sentences, onLook, onCurrent, onRing, holdMs = TUNE.HOLD_MS, ringR = 45, inset = {}, errorPx = null }) {
       this.panel = panel;
       this.sentences = sentences;
+      // how far to trust the gaze vertically: the calibration's own error, within reason
+      this.sigmaY = errorPx ? Math.min(90, Math.max(45, errorPx * 0.6)) : TUNE.SIGMA_Y;
       this.inset = inset;        // px per side (left/right/top/bottom) the gaze must be inside the panel to start a look:
                                  // set on the side that faces the writing, so a glance near that edge is not reading
       this.holdMs = holdMs;
@@ -138,7 +145,8 @@
       for (const r of rects) {
         const dx = x < r.x0 ? r.x0 - x : x > r.x1 ? x - r.x1 : 0;
         const dy = y < r.y0 ? r.y0 - y : y > r.y1 ? y - r.y1 : 0;
-        const d = dx * dx / (SIGMA_X * SIGMA_X) + dy * dy / (SIGMA_Y * SIGMA_Y);
+        const sy = this.sigmaY || TUNE.SIGMA_Y;
+        const d = dx * dx / (TUNE.SIGMA_X * TUNE.SIGMA_X) + dy * dy / (sy * sy);
         if (d < best) { best = d; bdx = dx; bdy = dy; }
       }
       return { d: best, dx: bdx, dy: bdy };
@@ -154,7 +162,7 @@
       // hysteresis: the gaze has to land well inside the panel to start counting, and only stops
       // once it is clearly outside, so hovering near the edge between panel and page does nothing
       const reading = this.enteredAt != null, ins = this.inset;
-      const edge = side => reading ? PANEL_PAD : -(ins[side] || 0);
+      const edge = side => reading ? TUNE.PANEL_PAD : -(ins[side] || 0);
       const inPanel = sample.x != null && !sample.away && !sample.edge && sample.x >= pr.left - edge('left') && sample.x <= pr.right + edge('right') && sample.y >= pr.top - edge('top') && sample.y <= pr.bottom + edge('bottom');
 
       if (!inPanel) { this._leave(t, false); return -1; }
@@ -162,7 +170,7 @@
       // nothing counts until the gaze has settled in one place for the hold time
       if (this.enteredAt == null) this.enteredAt = t;
       this.settled = !!(sample.region && sample.region.dur >= this.holdMs);
-      if (t - this.enteredAt < ENTER_MS || !this.settled) {
+      if (t - this.enteredAt < TUNE.ENTER_MS || !this.settled) {
         if (this.current !== -1 && !this.settled) { this.current = -1; this.candidate = -1; this.onCurrent(-1); }
         if (this.ringOn) { this.ringOn = false; this.onRing(null); }
         return this.current;
@@ -171,7 +179,7 @@
       // the ring sits on the dwell centroid: steadier than the raw point, and what the user sees
       const x = sample.region.x, y = sample.region.y;
       const anchor = this.cursor != null ? this.cursor : this.progress;
-      let best = -1, bestScore = -Infinity;
+      let best = -1, bestScore = -Infinity, curScore = -Infinity;
       for (let i = 0; i < this.sentences.length; i++) {
         const rects = this.rects[i];
         if (!rects.length) continue;
@@ -180,10 +188,14 @@
         let score = -g.d / 2;
         if (anchor >= 0) {
           const off = i - anchor - 0.5;         // centred between the sentence being written and the next
-          score -= (off * off) / (2 * PRIOR_SD * PRIOR_SD);
+          score -= (off * off) / (2 * TUNE.PRIOR_SD * TUNE.PRIOR_SD);
         }
+        if (i === this.current) curScore = score;
         if (score > bestScore) { bestScore = score; best = i; }
       }
+      // the sentence already highlighted keeps it unless another wins by a clear margin; a highlight
+      // only just set gets no such protection, since it may have landed on the way to the real one
+      if (best !== this.current && curScore > -Infinity && t - (this.currentAt || 0) >= TUNE.STICK_AFTER && bestScore - curScore < TUNE.STICK) best = this.current;
       if (best < 0) { if (this.ringOn) { this.ringOn = false; this.onRing(null); } return -1; }
       if (!this.look) this.look = { start: t, last: t, dwell: new Map(), words: new Map() };
       const lk = this.look;
@@ -207,14 +219,14 @@
       // the highlight only moves once a different sentence has won for a while
       if (best === this.current) this.candidate = -1;
       else if (best !== this.candidate) { this.candidate = best; this.candidateAt = t; }
-      else if (t - this.candidateAt >= SWITCH_MS || this.current === -1) { this.current = best; this.candidate = -1; this.onCurrent(best); }
+      else if (t - this.candidateAt >= TUNE.SWITCH_MS || this.current === -1) { this.current = best; this.currentAt = t; this.candidate = -1; this.onCurrent(best); }
       return this.current === -1 ? best : this.current;
     }
 
     // Gaze is off the panel (or tracking is paused): end the look once it has been away long enough
     _leave(t, now) {
       this.enteredAt = null;
-      if (this.look && (now || t - this.look.last > LEAVE_MS)) this._endLook(t);
+      if (this.look && (now || t - this.look.last > TUNE.LEAVE_MS)) this._endLook(t);
       if (this.current !== -1) { this.current = -1; this.candidate = -1; this.onCurrent(-1); }
       if (this.ringOn) { this.ringOn = false; this.onRing(null); }
     }
@@ -222,7 +234,7 @@
     _endLook(t) {
       const lk = this.look;
       this.look = null;
-      const read = [...lk.dwell].filter(([, ms]) => ms >= MIN_LOOK).map(([s]) => s).sort((a, b) => a - b);
+      const read = [...lk.dwell].filter(([, ms]) => ms >= TUNE.MIN_LOOK).map(([s]) => s).sort((a, b) => a - b);
       if (!read.length) { this._subtract(lk); return; }   // too brief to be a lookup: do not let it tint anything
       read.forEach(s => { this.looks[s]++; });
       if (this.cursor == null) this.progress = Math.max(this.progress, read[read.length - 1]);
@@ -269,7 +281,7 @@
       if (this.paused) this._leave(this.lastT || 0, true);
     }
 
-    finish() { if (this.look) this._endLook(this.look.last + LEAVE_MS); }
+    finish() { if (this.look) this._endLook(this.look.last + TUNE.LEAVE_MS); }
 
     // 0 = never read, 1 = glanced (yellow), 2 = looked (orange), 3 = stared or kept coming back (red)
     static tier(ms, looks = 0) {
@@ -347,6 +359,7 @@
     return hit;
   }
 
+  LookupMapper.TUNE = TUNE;
   window.LookupMapper = LookupMapper;
   window.splitEssay = splitEssay;
   window.makeCursor = makeCursor;
