@@ -98,9 +98,15 @@
   }
 
   class LookupMapper {
-    constructor({ panel, sentences, onLook, onCurrent, onRing, holdMs = TUNE.HOLD_MS, ringR = 45, inset = {}, errorPx = null }) {
+    // ring: the gaze highlight is an ellipse rx wide and ry tall (half-axes, px); ringR makes it a circle.
+    // sentenceTint: also underline whole sentences by tier (the report wants it, the live reference not)
+    constructor({ panel, sentences, onLook, onCurrent, onRing, holdMs = TUNE.HOLD_MS, ringR = null, ring = null, inset = {}, errorPx = null, sentenceTint = false }) {
       this.panel = panel;
       this.sentences = sentences;
+      this.setRing(ring || { rx: ringR || 45, ry: ringR || 45 });
+      this.sentenceTint = sentenceTint;
+      this.sentOf = new Map();   // word span → sentence index
+      sentences.forEach((sn, i) => (sn.wordEls || []).forEach(w => this.sentOf.set(w, i)));
       // how far to trust the gaze vertically: the calibration's own error, within reason
       this.sigmaY = errorPx ? Math.min(90, Math.max(45, errorPx * 0.6)) : TUNE.SIGMA_Y;
       this.inset = inset;        // px per side (left/right/top/bottom) the gaze must be inside the panel to start a look:
@@ -205,17 +211,17 @@
       // the words under the ring collect time too: that is the phrase-level "gap"
       // words at the centre of the ring earn full time, words at its rim only a fifth, so the
       // phrase actually being read pulls ahead of its neighbours on the lines above and below
-      const hits = wordsInCircle(this.sentences, x, y, this.ringR);
-      const sig = this.ringR / 1.8;
+      const { rx, ry } = this.ring;
+      const hits = wordsInEllipse(this.sentences, x, y, rx, ry);
       for (const w of hits) {
         const b = w.getBoundingClientRect();
-        const d2 = ((b.left + b.right) / 2 - x) ** 2 + ((b.top + b.bottom) / 2 - y) ** 2;
-        const share = dt * Math.exp(-d2 / (2 * sig * sig));
+        const d2 = (((b.left + b.right) / 2 - x) / rx) ** 2 + (((b.top + b.bottom) / 2 - y) / ry) ** 2;   // 1 at the rim
+        const share = dt * Math.exp(-1.6 * d2);
         lk.words.set(w, (lk.words.get(w) || 0) + share);
         this.wordTime.set(w, (this.wordTime.get(w) || 0) + share);
       }
       this.ringOn = true;
-      this.onRing({ x, y, r: this.ringR, hits });
+      this.onRing({ x, y, rx, ry, r: Math.max(rx, ry), hits });
       // the highlight only moves once a different sentence has won for a while
       if (best === this.current) this.candidate = -1;
       else if (best !== this.candidate) { this.candidate = best; this.candidateAt = t; }
@@ -308,10 +314,11 @@
       });
     }
 
-    // Apply the tier classes (h1/h2/h3) to every sentence and word span, for the live reference and the report
+    // Apply the tier classes (h1/h2/h3) to every word span (and sentence, with sentenceTint), for
+    // the live reference and the report
     paint() {
       this.sentences.forEach((sn, i) => {
-        const st = LookupMapper.tier(this.time[i], this.looks[i]);
+        const st = this.sentenceTint ? LookupMapper.tier(this.time[i], this.looks[i]) : 0;
         sn.el.classList.remove('h1', 'h2', 'h3');
         if (st) sn.el.classList.add('h' + st);
         (sn.wordEls || []).forEach(w => {
@@ -320,6 +327,34 @@
           if (wt) w.classList.add('h' + wt);
         });
       });
+    }
+
+    setRing(ring) { this.ring = { rx: Math.max(10, ring.rx), ry: Math.max(8, ring.ry) }; }
+
+    // The tier a word span shows now (0 to 3)
+    tierOf(w) { return LookupMapper.tier(this.wordTime.get(w) || 0); }
+
+    // Mark words by hand: tier 1 to 3 gives them at least that colour (and their sentence a
+    // lookup), 0 clears them. The time is the lowest that shows the tier, so the report ranks a
+    // hand mark like a look of that strength.
+    mark(wordEls, tier) {
+      const ms = LookupMapper.TIER_MS[tier] || 0;
+      const touched = new Set();
+      wordEls.forEach(w => {
+        if (!tier) this.wordTime.delete(w);
+        else this.wordTime.set(w, Math.max(this.wordTime.get(w) || 0, ms));
+        const s = this.sentOf.get(w);
+        if (s != null) touched.add(s);
+      });
+      touched.forEach(s => {
+        if (tier) { this.time[s] = Math.max(this.time[s], ms); this.looks[s] = Math.max(this.looks[s], 1); this.manual = true; }
+        else {
+          // nothing marked or read in the sentence any more: it was never looked up
+          const any = (this.sentences[s].wordEls || []).some(w => this.wordTime.has(w));
+          if (!any) { this.time[s] = 0; this.looks[s] = 0; }
+        }
+      });
+      this.paint();
     }
 
     destroy() { removeEventListener('resize', this._invalidate); removeEventListener('scroll', this._invalidate); this.panel.removeEventListener('scroll', this._invalidate); }
@@ -341,28 +376,125 @@
     return span;
   }
 
-  // The words whose boxes a circle covers: what the page lights up inside the gaze ring.
-  // Only sentences whose own boxes come near the circle are inspected, so it stays cheap.
-  function wordsInCircle(sentences, cx, cy, r) {
+  // The words whose boxes an ellipse (half-axes rx, ry) covers: what the page lights up inside the
+  // gaze highlight. Only sentences whose own boxes come near it are inspected, so it stays cheap.
+  function wordsInEllipse(sentences, cx, cy, rx, ry) {
     const hit = [];
     for (const sn of sentences) {
       if (!sn.wordEls) continue;
       let near = false;
-      for (const b of sn.el.getClientRects()) if (cx + r > b.left && cx - r < b.right && cy + r > b.top && cy - r < b.bottom) { near = true; break; }
+      for (const b of sn.el.getClientRects()) if (cx + rx > b.left && cx - rx < b.right && cy + ry > b.top && cy - ry < b.bottom) { near = true; break; }
       if (!near) continue;
       for (const w of sn.wordEls) {
         const b = w.getBoundingClientRect();
-        const dx = Math.max(b.left - cx, 0, cx - b.right), dy = Math.max(b.top - cy, 0, cy - b.bottom);
-        if (dx * dx + dy * dy <= r * r) hit.push(w);
+        const dx = Math.max(b.left - cx, 0, cx - b.right) / rx, dy = Math.max(b.top - cy, 0, cy - b.bottom) / ry;
+        if (dx * dx + dy * dy <= 1) hit.push(w);
       }
     }
     return hit;
   }
+  const wordsInCircle = (sentences, cx, cy, r) => wordsInEllipse(sentences, cx, cy, r, r);
+
+  // How wide a highlight of `words` words is, from the words as rendered: the average word box
+  // plus a space, times the count. Returns { rx, ry } half-axes, ry being most of a line.
+  function ringFor(sentences, words = 6) {
+    let w = 0, n = 0, h = 0;
+    for (const sn of sentences) for (const el of sn.wordEls || []) { const b = el.getBoundingClientRect(); if (!b.width) continue; w += b.width; h += b.height; n++; if (n >= 80) break; }
+    const avgW = n ? w / n : 50, avgH = n ? h / n : 24;
+    return { rx: (avgW + avgH * 0.3) * words / 2, ry: avgH * 0.85 };
+  }
+
+  /* ---- marking by hand ---- */
+
+  // Click a word to raise its colour (yellow → orange → red → clear), drag across words or
+  // right-click one for a picker with the three colours and clear; 1 2 3 set the colour of the
+  // selection, 0 clears it, Esc closes the picker. Returns { destroy, open: bool }.
+  // onChange fires after every mark; onBusy(true/false) while the picker is open, so the page can
+  // keep the camera out of it.
+  const PICK_CSS = `
+  .gz-pick { position: fixed; z-index: 1003; display: flex; gap: 4px; padding: 4px; border-radius: 8px; background: var(--bg, #fff); border: 1px solid var(--line, #ddd); box-shadow: 0 4px 14px rgba(0,0,0,.18); font: 13px system-ui, sans-serif; }
+  .gz-pick button { width: 30px; height: 26px; border: 1px solid var(--line, #ccc); border-radius: 6px; cursor: pointer; font: inherit; color: inherit; background: var(--bg, #fff); }
+  .gz-pick button:hover { outline: 2px solid var(--accent, #2563eb); }
+  .gz-pick .t1 { background: rgba(250, 204, 21, .5); } .gz-pick .t2 { background: rgba(255, 140, 0, .55); } .gz-pick .t3 { background: rgba(225, 45, 45, .6); }
+  .gz-pick .t0 { width: auto; padding: 0 8px; }
+  .gz-marking .w { cursor: pointer; }
+  `;
+  function attachMarking(mapper, panel, { onChange = () => {}, onBusy = () => {} } = {}) {
+    if (!document.getElementById('gz-pick-css')) document.head.appendChild(Object.assign(document.createElement('style'), { id: 'gz-pick-css', textContent: PICK_CSS }));
+    panel.classList.add('gz-marking');
+    const pick = document.createElement('div');
+    pick.className = 'gz-pick';
+    pick.hidden = true;
+    pick.title = 'Mark the words: 1 yellow, 2 orange, 3 red, 0 clear';
+    const mk = (cls, label, tier, title) => { const b = document.createElement('button'); b.className = cls; b.textContent = label; b.title = title; b.addEventListener('mousedown', e => e.preventDefault()); b.addEventListener('click', () => apply(tier)); pick.append(b); };
+    mk('t1', '1', 1, 'Yellow: glanced (1)'); mk('t2', '2', 2, 'Orange: looked (2)'); mk('t3', '3', 3, 'Red: priority (3)'); mk('t0', 'clear', 0, 'Clear (0)');
+    document.body.append(pick);
+    let target = [];
+    const wordAt = node => { const w = node && (node.nodeType === 3 ? node.parentElement : node); return w && w.closest ? w.closest('.w') : null; };
+    const open = (words, x, y) => {
+      target = words;
+      if (!target.length) return close();
+      pick.hidden = false;
+      const r = pick.getBoundingClientRect();
+      pick.style.left = Math.max(6, Math.min(innerWidth - r.width - 6, x - r.width / 2)) + 'px';
+      pick.style.top = Math.max(6, (y - r.height - 12 < 6 ? y + 16 : y - r.height - 12)) + 'px';
+      onBusy(true);
+    };
+    const close = () => { if (!pick.hidden) { pick.hidden = true; onBusy(false); } target = []; };
+    const apply = tier => { if (target.length) { mapper.mark(target, tier); onChange(); } close(); const sel = getSelection(); if (sel) sel.removeAllRanges(); };
+    // the word spans a selection touches
+    const selectedWords = () => {
+      const sel = getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount) return [];
+      const range = sel.getRangeAt(0);
+      if (!panel.contains(range.commonAncestorContainer)) return [];
+      return [...panel.querySelectorAll('.w')].filter(w => range.intersectsNode(w));
+    };
+    let downAt = null;
+    const onDown = e => { if (e.button === 0) downAt = { x: e.clientX, y: e.clientY, t: Date.now() }; };
+    const onUp = e => {
+      if (e.button !== 0) return;
+      const sel = selectedWords();
+      if (sel.length > 1 || (sel.length === 1 && downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 6)) return open(sel, e.clientX, e.clientY);
+      const w = wordAt(e.target);
+      if (!w || !downAt || Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 6) return;
+      // a plain click: one step up the colours, and back to clear after red
+      if (e.shiftKey) return open([w], e.clientX, e.clientY);
+      mapper.mark([w], (mapper.tierOf(w) + 1) % 4);
+      onChange();
+    };
+    const onMenu = e => { const w = wordAt(e.target); if (!w) return; e.preventDefault(); const sel = selectedWords(); open(sel.includes(w) ? sel : [w], e.clientX, e.clientY); };
+    const onKey = e => {
+      if (pick.hidden) {
+        // a selection with no picker yet (made with the keyboard, or the picker closed): the digits still work
+        if (!/^[0-3]$/.test(e.key) || e.ctrlKey || e.metaKey || e.altKey) return;
+        const sel = selectedWords();
+        if (!sel.length) return;
+        target = sel;
+      } else if (e.key === 'Escape') { e.preventDefault(); return close(); }
+      if (/^[0-3]$/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); apply(+e.key); }
+    };
+    const onDocDown = e => { if (!pick.hidden && !pick.contains(e.target)) close(); };
+    panel.addEventListener('mousedown', onDown);
+    panel.addEventListener('mouseup', onUp);
+    panel.addEventListener('contextmenu', onMenu);
+    addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDocDown, true);
+    return {
+      get open() { return !pick.hidden; },
+      close,
+      destroy() { close(); pick.remove(); panel.classList.remove('gz-marking'); panel.removeEventListener('mousedown', onDown); panel.removeEventListener('mouseup', onUp); panel.removeEventListener('contextmenu', onMenu); removeEventListener('keydown', onKey); document.removeEventListener('mousedown', onDocDown, true); },
+    };
+  }
 
   LookupMapper.TUNE = TUNE;
+  LookupMapper.TIER_MS = [0, 350, 1500, 4000];   // the least dwell that shows each tier (see tier())
   window.LookupMapper = LookupMapper;
   window.splitEssay = splitEssay;
   window.makeCursor = makeCursor;
   window.renderSentence = renderSentence;
   window.wordsInCircle = wordsInCircle;
+  window.wordsInEllipse = wordsInEllipse;
+  window.ringFor = ringFor;
+  window.attachMarking = attachMarking;
 })();

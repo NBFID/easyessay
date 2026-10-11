@@ -98,7 +98,7 @@
   </div>
   <div class="row">
     <label>Hold a look for <input id="holdMs" type="number" min="200" max="2000" step="100" value="600" style="width:76px"> ms before it counts</label>
-    <label>Gaze circle <input id="ringPx" type="number" min="40" max="200" step="10" value="90" style="width:64px"> px across</label>
+    <label title="The highlight under your gaze is this many words wide and about a line tall">Highlight <input id="ringWords" type="number" min="2" max="14" step="1" value="6" style="width:56px"> words wide</label>
   </div>
   <div class="row">
     <label><input id="soundOpt" type="checkbox"> Soft tick when a lookup is counted</label>
@@ -107,6 +107,7 @@
   <div class="row">
     <button id="camBtn" class="btn">Check camera</button>
     <select id="camSel" hidden></select>
+    <button id="testBtn" class="btn" title="Five targets across the screen: how far off each look lands">Test accuracy</button>
     <span id="camStatus" class="muted small"></span>
   </div>
   <div class="row">
@@ -133,10 +134,11 @@
     <button id="undoBtn" class="btn" title="Ctrl+U: take back the last lookup">Undo look</button>
     <button id="resetBtn" class="btn" title="Ctrl+R: clear every lookup so far">Reset</button>
     <button id="fixBtn" class="btn" title="Ctrl+Q: shifted in your chair? One dot re-centres the tracking">Quick fix</button>
+    <button id="testSessBtn" class="btn" title="Ctrl+T: five targets, how far off each look lands">Test</button>
     <button id="recalBtn" class="btn" title="Ctrl+C (with nothing selected)">Recalibrate</button>
     <button id="finishBtn" class="btn primary">Finish</button>
   </div>
-  <div id="keys" class="muted">Ctrl+P pause · Ctrl+U undo look · Ctrl+R reset · Ctrl+Q quick fix · Ctrl+C recalibrate · Ctrl+D gaze dot · Ctrl+B blur · Ctrl+Enter finish</div>
+  <div id="keys" class="muted">Ctrl+P pause · Ctrl+U undo look · Ctrl+R reset · Ctrl+Q quick fix · Ctrl+T test accuracy · Ctrl+C recalibrate · Ctrl+D gaze dot · Ctrl+B blur · Ctrl+Enter finish · Mark by hand: click a word to step its colour, drag or right-click for the picker, 1 2 3 colour, 0 clear</div>
   <div id="main">
     <div id="ref"></div>
     <div id="write"><textarea id="typed" spellcheck="false" autocomplete="off" placeholder="Write the essay here from memory. Look up at the reference whenever you need to."></textarea></div>
@@ -181,7 +183,7 @@ const ref = $('ref'), typed = $('typed');
 
 essayIn.value = saved.essay || '';
 essayIn.addEventListener('input', () => { saved.essay = essayIn.value; save(); });
-['mode', 'fontPx', 'blurOpt', 'dotOpt', 'holdMs', 'ringPx', 'soundOpt', 'followOpt', 'camSel'].forEach(id => {
+['mode', 'fontPx', 'blurOpt', 'dotOpt', 'holdMs', 'ringWords', 'soundOpt', 'followOpt', 'camSel'].forEach(id => {
   const n = $(id), k = n.type === 'checkbox' ? 'checked' : 'value';
   if (saved[id] != null) n[k] = saved[id];
   n.addEventListener('change', () => { saved[id] = n[k]; save(); });
@@ -388,11 +390,13 @@ function runSession(text) {
   lastTyped = '';
   cursorFrom = makeCursor(sentences);
   if (mapper) mapper.destroy();
+  if (marking) marking.destroy();
   let lastHits = [];
   mapper = new LookupMapper({
     panel: ref, sentences,
     holdMs: +$('holdMs').value || 600,
-    ringR: (+$('ringPx').value || 90) / 2,
+    ring: ringFor(sentences, +$('ringWords').value || 6, ref),   // about so many words wide, a line tall
+    errorPx: gaze.model && gaze.model.error,
     // the side facing the writing: the box on the right when typing, the desk below when on paper
     inset: $('mode').value === 'paper' ? { bottom: 70 } : { right: 70 },
     onLook: entry => { $('lookCount').textContent = mapper.log.length + ' lookup' + (mapper.log.length === 1 ? '' : 's'); mapper.paint(); if (entry && $('soundOpt').checked) tick(); },
@@ -400,10 +404,12 @@ function runSession(text) {
       lastHits.forEach(w => w.classList.remove('hit'));
       lastHits = r ? r.hits : [];
       lastHits.forEach(w => w.classList.add('hit'));
-      if (r) { ring.style.left = r.x + 'px'; ring.style.top = r.y + 'px'; ring.style.width = ring.style.height = r.r * 2 + 'px'; }
+      if (r) { ring.style.left = r.x + 'px'; ring.style.top = r.y + 'px'; ring.style.width = r.rx * 2 + 'px'; ring.style.height = r.ry * 2 + 'px'; }
       ring.classList.toggle('on', !!r);
     },
   });
+  // marking by hand: click a word, drag across words or right-click for the colour picker
+  marking = attachMarking(mapper, ref, { onChange: () => { $('lookCount').textContent = mapper.log.length + ' lookup' + (mapper.log.length === 1 ? '' : 's') + (mapper.manual ? ' + marks' : ''); } });
   paused = false;
   pausedMs = 0;
   $('pauseBtn').textContent = 'Pause';
@@ -415,8 +421,10 @@ function runSession(text) {
   clockTimer = setInterval(() => { $('clock').textContent = clock(elapsed()); $('fps').textContent = Math.round(gaze.fps) + ' fps'; }, 1000);
   let blurTick = 0;
   onGaze = s => {
-    // a keystroke in the last second means the eyes are on the writing, whatever the camera says
-    if (performance.now() - lastKeyAt < 1200) s = { ...s, x: null, y: null, fix: null, region: null, away: true };
+    // a keystroke in the last second means the eyes are on the writing, whatever the camera says;
+    // a moving mouse (or the colour picker open) means a hand is marking, so the camera stands back
+    const now = performance.now();
+    if (now - lastKeyAt < 1200 || now - lastMouseAt < 1500 || (marking && marking.open)) s = { ...s, x: null, y: null, fix: null, region: null, away: true };
     gazeDot.classList.toggle('away', s.x == null);
     if (s.x != null) {
       gazeDot.style.left = s.x + 'px'; gazeDot.style.top = s.y + 'px';
@@ -438,8 +446,10 @@ function runSession(text) {
   if ($('mode').value === 'typed') typed.focus();
 }
 
-let lastKeyAt = 0;
+let lastKeyAt = 0, lastMouseAt = 0, marking = null;
 typed.addEventListener('keydown', () => { lastKeyAt = performance.now(); });
+// the touchpad: any real movement pauses the camera for a moment, so the reference can be marked by hand
+addEventListener('mousemove', e => { if (!session.hidden && (e.movementX || e.movementY)) lastMouseAt = performance.now(); });
 typed.addEventListener('input', () => {
   lastKeyAt = performance.now();
   lastTyped = typed.value;
@@ -458,6 +468,34 @@ $('fixBtn').addEventListener('click', async () => {
   if ($('mode').value === 'typed') typed.focus();
 });
 
+// The accuracy test mid-session: the session carries on underneath
+$('testSessBtn').addEventListener('click', async () => {
+  const live = onGaze;
+  onGaze = () => {};
+  const r = await GazeCalibrate.accuracyTest(gaze);
+  if (mapper) mapper.rects = null;
+  onGaze = live;
+  if (r && r.redo) return $('recalBtn').click();
+  if (r) flash('Average miss ' + r.error + ' px');
+  if ($('mode').value === 'typed') typed.focus();
+});
+
+// From the setup page: calibrate first if there is no model yet
+$('testBtn').addEventListener('click', async () => {
+  err.textContent = '';
+  $('testBtn').disabled = true;
+  try { await ensureTracker(); } catch (e) { $('testBtn').disabled = false; err.textContent = 'Could not start the camera: ' + (e.message || e); return; }
+  $('testBtn').disabled = false;
+  checking = false; onFrame = null;
+  if (!gaze.model) { const e = await calibrate(); if (e == null) { preview.className = 'off'; return; } }
+  preview.className = '';
+  const r = await GazeCalibrate.accuracyTest(gaze);
+  if (r && r.redo) { await calibrate(false); }
+  preview.className = 'off';
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  $('camStatus').textContent = r && r.error != null ? 'Accuracy test: average miss ' + r.error + ' px (' + r.rows.map(x => x.name + ' ' + x.error).join(', ') + ')' : '';
+});
+
 $('recalBtn').addEventListener('click', async () => {
   onGaze = () => {};
   clearInterval(clockTimer);
@@ -473,7 +511,7 @@ function runSessionKeeping(text, draft, old) {
   const wordMs = [];
   old.sentences.forEach((sn, i) => (sn.wordEls || []).forEach((w, k) => { const ms = old.wordTime.get(w); if (ms) wordMs.push([i, k, ms]); }));
   runSession(text);
-  mapper.time = time; mapper.looks = looks; mapper.log = log; mapper.started = old.started;
+  mapper.time = time; mapper.looks = looks; mapper.log = log; mapper.started = old.started; mapper.manual = old.manual;
   wordMs.forEach(([i, k, ms]) => { const w = sentences[i] && sentences[i].wordEls[k]; if (w) mapper.wordTime.set(w, ms); });
   mapper.paint();
   startedAt = started;
@@ -493,7 +531,7 @@ addEventListener('keydown', e => {
   if (session.hidden || !(e.ctrlKey || e.metaKey) || e.altKey) return;
   const k = e.key.toLowerCase();
   const selecting = document.activeElement === typed && typed.selectionStart !== typed.selectionEnd;
-  const act = { p: () => setPaused(!paused), u: undoLook, r: resetLooks, q: () => $('fixBtn').click(), d: () => { $('dotOpt').checked = !$('dotOpt').checked; gazeDot.classList.toggle('on', $('dotOpt').checked); saved.dotOpt = $('dotOpt').checked; save(); },
+  const act = { p: () => setPaused(!paused), u: undoLook, r: resetLooks, q: () => $('fixBtn').click(), t: () => $('testSessBtn').click(), d: () => { $('dotOpt').checked = !$('dotOpt').checked; gazeDot.classList.toggle('on', $('dotOpt').checked); saved.dotOpt = $('dotOpt').checked; save(); },
     b: () => { $('blurOpt').checked = !$('blurOpt').checked; session.classList.toggle('blur', $('blurOpt').checked); saved.blurOpt = $('blurOpt').checked; save(); updateBlur(null); },
     c: () => { if (!selecting) $('recalBtn').click(); else return false; }, enter: finishSession }[k];
   if (!act) return;
@@ -508,7 +546,7 @@ function finishSession() {
   const stats = mapper.stats();
   const total = elapsed();
   const rec = { at: Date.now(), duration: Math.round(total), mode: $('mode').value, words: essayIn.value.trim().split(/\s+/).length,
-    typed: typed.value, lookups: mapper.log.map(l => ({ t: l.t, dur: l.dur, s: l.s })), sentences: stats, inPanelMs: Math.round(mapper.inPanelMs), calibrationError: gaze.model && gaze.model.error };
+    typed: typed.value, lookups: mapper.log.map(l => ({ t: l.t, dur: l.dur, s: l.s })), sentences: stats, inPanelMs: Math.round(mapper.inPanelMs), calibrationError: gaze.model && gaze.model.error, marked: !!mapper.manual };
   saved.sessions = [rec, ...(saved.sessions || [])].slice(0, 30);
   save();
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -522,7 +560,7 @@ function showReport(rec) {
   show(report);
   const stats = rec.sentences;
   const looked = stats.filter(s => s.looks > 0);
-  $('sumLine').textContent = clock(rec.duration) + ' writing · ' + rec.lookups.length + ' lookups · ' + looked.length + ' of ' + stats.length + ' sentences looked up · ' + clock(rec.inPanelMs) + ' spent reading the reference' + (rec.calibrationError ? ' · calibration error ' + Math.round(rec.calibrationError) + ' px' : '');
+  $('sumLine').textContent = clock(rec.duration) + ' writing · ' + rec.lookups.length + ' lookups · ' + looked.length + ' of ' + stats.length + ' sentences looked up · ' + clock(rec.inPanelMs) + ' spent reading the reference' + (rec.marked ? ' · some words marked by hand' : '') + (rec.calibrationError ? ' · calibration error ' + Math.round(rec.calibrationError) + ' px' : '');
   const worst = $('worst');
   worst.textContent = '';
   const TIER = ['', 'glanced', 'looked', 'stared'];
