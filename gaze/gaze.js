@@ -61,9 +61,13 @@
       catch (e) { return []; }
     }
 
-    constructor({ video, onGaze, onStatus, onFrame, deviceId = null } = {}) {
+    // loop: 'raf' (default) or 'timer' (keeps going while the page is hidden behind other windows);
+    // win: the window whose requestAnimationFrame drives the loop (a picture-in-picture window stays visible)
+    constructor({ video, onGaze, onStatus, onFrame, deviceId = null, loop = 'raf', win = window } = {}) {
       this.video = video;
       this.deviceId = deviceId;
+      this.loopMode = loop;
+      this.win = win;
       this.onGaze = onGaze || (() => {});
       this.onStatus = onStatus || (() => {});
       this.onFrame = onFrame || null;   // (landmarks, result) for drawing a preview
@@ -119,12 +123,19 @@
     // rAF rather than requestVideoFrameCallback, which can stall while the video element is hidden
     _loop() {
       let lastTime = -1;
-      const step = () => {
-        if (!this.running) return;
-        requestAnimationFrame(step);
+      const tick = () => {
         if (this.video.currentTime === lastTime) return;   // no new camera frame yet
         lastTime = this.video.currentTime;
         this._tick();
+      };
+      if (this.loopMode === 'timer') {
+        this.timer = setInterval(() => { if (!this.running) return clearInterval(this.timer); tick(); }, 30);
+        return;
+      }
+      const step = () => {
+        if (!this.running) return;
+        (this.win || window).requestAnimationFrame(step);
+        tick();
       };
       step();
     }
@@ -262,7 +273,8 @@
 
     // Median over the last few frames, then an exponential average, then a dispersion-based fixation test.
     _emit(t, rx, ry, f) {
-      const W = innerWidth, H = innerHeight;
+      // the calibrated viewport (the screen, when calibrated fullscreen), not the window's current size
+      const W = this.model.w || innerWidth, H = this.model.h || innerHeight;
       // Looking away from the screen (down at the paper, at the keyboard, out the window): the
       // raw prediction lands well outside the viewport, the lids droop over the iris, or the head
       // has tipped well away from where it was calibrated. Hysteresis keeps it from flapping.
@@ -321,7 +333,7 @@
       const rg = this.region;
       if (!rg || Math.hypot(x - rg.x, y - rg.y) > REGION_R * 1.4) this.region = { x, y, start: t, dur: 0, r: REGION_R };
       else { rg.x += 0.12 * (x - rg.x); rg.y += 0.12 * (y - rg.y); rg.dur = t - rg.start; }
-      this.onGaze({ t, x, y, fix: this.fix, region: this.region, blink: false, face: true, away: false, edge, drift: this._drift(f) });
+      this.onGaze({ t, x, y, fix: this.fix, region: this.region, blink: false, face: true, away: false, edge, drift: this._drift(f), head: f.head, ear: f.ear });
     }
 
     // How far the head is from where it was during calibration, 0..1+ (1 ≈ should recalibrate)
