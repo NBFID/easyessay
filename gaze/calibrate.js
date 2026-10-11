@@ -5,12 +5,16 @@
 //
 //   const err = await GazeCalibrate.calibrate(gaze, { reusable: savedModel });
 //     → average check error in px, or null if the user pressed Escape or the fit failed
+//   await GazeCalibrate.accuracyTest(gaze)   // five targets; → { targets, rows, cols, error } or null
 //   await GazeCalibrate.prompt(html)   // a message on the overlay; resolves on click, Space or Enter
 //   GazeCalibrate.hide()
 //
-// Sixteen dots fit the model, four more check it. The user looks at each dot, clicks it (or presses
-// Space) and keeps looking for a second. With `reusable` (a model from gaze.exportModel()), the
-// opening message offers U to reuse it instead, which only works while the window is the same size.
+// Sixteen dots fit the model (the top and bottom rows are held longer, where the fit is weakest),
+// three are looked at with the head moving, and five more check it, two on the top row, one in the
+// middle and two on the bottom. The user looks at each dot, clicks it (or presses Space) and keeps
+// looking for a second. The check dots also decide which local correction the model keeps. With
+// `reusable` (a model from gaze.exportModel()), the opening message offers U to reuse it instead,
+// which only works while the window is the same size.
 
 (() => {
   const CSS = `
@@ -24,6 +28,13 @@
   .gz-dot::after { content: ''; position: absolute; left: 10px; top: 10px; width: 6px; height: 6px; border-radius: 50%; background: #fff; }
   .gz-dot.gz-hold { animation: gz-shrink 1.1s linear forwards; }
   @keyframes gz-shrink { from { transform: scale(1.5); } to { transform: scale(0.8); } }
+  .gz-cal .gz-hit { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; border: 2px solid var(--accent, #2563eb); background: color-mix(in srgb, var(--accent, #2563eb) 20%, transparent); }
+  .gz-cal .gz-aim { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: var(--muted, #6b6b6b); opacity: .6; }
+  .gz-cal .gz-aim b { position: absolute; left: 18px; top: -4px; font-size: 13px; white-space: nowrap; color: var(--ink, var(--fg, #1b1b1b)); }
+  .gz-cal .gz-line { position: absolute; height: 2px; background: var(--muted, #6b6b6b); opacity: .5; transform-origin: 0 50%; }
+  .gz-cal table { border-collapse: collapse; margin: 8px auto; font-size: 14px; }
+  .gz-cal td, .gz-cal th { padding: 2px 10px; text-align: left; }
+  .gz-cal th { font-weight: 600; color: var(--muted, #6b6b6b); }
   `;
 
   let root = null, msg = null, dot = null;
@@ -37,7 +48,8 @@
     document.body.appendChild(root);
   }
   const show = () => { ensure(); root.hidden = false; };
-  const hide = () => { if (root) { root.hidden = true; dot.style.display = 'none'; } };
+  const clearMarks = () => { if (root) root.querySelectorAll('.gz-hit, .gz-aim, .gz-line').forEach(n => n.remove()); };
+  const hide = () => { if (root) { root.hidden = true; dot.style.display = 'none'; clearMarks(); } };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   // Needs a click to have just happened; waits for the resize so the dots land on the fullscreen layout
@@ -139,7 +151,10 @@
     for (let i = pts.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pts[i], pts[j]] = [pts[j], pts[i]]; }
     for (let i = 0; i < pts.length; i++) {
       setMsg('Dot ' + (i + 1) + ' of ' + pts.length, true);
-      const n = await showDot(gaze, pts[i], () => gaze.stopCollecting());
+      // the top and bottom rows are where the fit is weakest (the lids get in the way), so they
+      // are held longer and give the fit more frames
+      const edgeRow = pts[i].y < innerHeight * 0.2 || pts[i].y > innerHeight * 0.8;
+      const n = await showDot(gaze, pts[i], () => gaze.stopCollecting(), { hold: edgeRow ? 1600 : 1100 });
       if (n < 0) { hide(); return null; }
       if (n < 5) { setMsg('Lost your face on that one, again…', true); await sleep(700); i--; }
     }
@@ -157,25 +172,98 @@
     setMsg('Fitting…', true);
     let fit;
     try { fit = gaze.fit(); } catch (e) { setMsg('<p>' + e.message + '</p>', false); await sleep(1500); hide(); return null; }
-    // check dots between the grid points
-    const checks = [[0.28, 0.3], [0.72, 0.3], [0.5, 0.55], [0.3, 0.8]].map(([a, b]) => ({ x: innerWidth * a, y: innerHeight * b }));
+    // check dots between the grid points: two on the top row, one in the middle, two on the bottom,
+    // so the verdict can say where the fit is weak
+    const checks = CHECKS.map(([a, b]) => ({ x: innerWidth * a, y: innerHeight * b }));
     const errs = [];
     for (let i = 0; i < checks.length; i++) {
       setMsg('Check ' + (i + 1) + ' of ' + checks.length + ' — same again', true);
       const n = await showDot(gaze, checks[i], () => { const e = gaze.validate(); if (e) errs.push(e); return 9; });
       if (n < 0) { hide(); return null; }
     }
-    const avg = k => Math.round(errs.reduce((a, b) => a + b[k], 0) / errs.length);
-    const e = errs.length ? avg('steady') : fit.error, frame = errs.length ? avg('frame') : e;
+    // the check dots pick the local correction: with it, per eye, or the plain fit
+    const pick = gaze.chooseCorrection();
+    const scored = pick ? pick.checks : errs;
+    const avg = k => Math.round(scored.reduce((a, b) => a + b[k], 0) / scored.length);
+    const e = scored.length ? avg('steady') : fit.error, frame = scored.length ? avg('frame') : e;
     gaze.model.error = e;
     const lineH = 28, lines = Math.round(innerHeight / lineH);
     const verdict = e < 80 ? 'Good: about ' + Math.max(1, Math.round(e / lineH)) + ' lines of text when you hold a look.' : e < 150 ? 'Usable: a look lands within ' + Math.round(e / lineH) + ' lines or so, and your typing position sorts out which sentence.' : 'Rough: lighting, glasses glare or a moving head make this hard. Try again with the room lit from the front, and sit still through the dots.';
-    const again = await prompt('<p><b>Error when holding a look: ' + e + ' px</b> <span class="gz-muted">(' + frame + ' px frame to frame; the screen is ' + lines + ' lines tall)</span></p><p>' + verdict + '</p><p class="gz-muted">Click to continue, press R to redo, or Esc to cancel.</p>', ['r']);
+    const rows = byRow(scored);
+    const rowLine = rows.length ? '<p class="gz-muted">By row: ' + rows.map(r => r.name + ' ' + r.error + ' px').join(' · ') + (rows.some(r => r.error > e * 1.6 && r.error > 100) ? ' — the weak row is where looks will land a line or two out' : '') + '</p>' : '';
+    const pickLine = pick ? '<p class="gz-muted">' + ({ none: 'The plain fit did best on the check dots; no local correction', both: 'Local correction from both eyes together', eyes: 'Local correction fitted per eye' })[pick.chosen] +
+      ' (' + Object.keys(pick.errors).map(k => ({ none: 'none', both: 'both', eyes: 'per eye' })[k] + ' ' + pick.errors[k]).join(', ') + ' px).' + (fit.headFit ? '' : ' Head movement did not help the fit and was left out.') + '</p>' : '';
+    const again = await prompt('<p><b>Error when holding a look: ' + e + ' px</b> <span class="gz-muted">(' + frame + ' px frame to frame; the screen is ' + lines + ' lines tall)</span></p><p>' + verdict + '</p>' + rowLine + pickLine +
+      '<p class="gz-muted">Click to continue, press T to test the accuracy on five targets, R to redo, or Esc to cancel.</p>', ['r', 't']);
     if (again === 'escape') { hide(); return null; }
     if (again === 'r') return calibrate(gaze, { reusable: null, fullscreen });
     remember(gaze);
+    if (again === 't') {
+      const t = await accuracyTest(gaze, { keepOpen: true });
+      if (t === null) { hide(); return null; }
+      if (t && t.redo) return calibrate(gaze, { reusable: null, fullscreen });
+    }
     hide();
     return e;
+  }
+
+  const CHECKS = [[0.3, 0.14], [0.7, 0.14], [0.5, 0.5], [0.3, 0.86], [0.7, 0.86]];
+  const rowName = y => y < innerHeight / 3 ? 'top' : y < innerHeight * 2 / 3 ? 'middle' : 'bottom';
+  const colName = x => x < innerWidth / 3 ? 'left' : x < innerWidth * 2 / 3 ? 'centre' : 'right';
+  // mean steady error per screen row (top, middle, bottom), in that order, for the rows that have a dot
+  function byRow(list, key = rowName, order = ['top', 'middle', 'bottom']) {
+    const by = new Map();
+    list.forEach(c => { const k = key(key === rowName ? c.y : c.x); (by.get(k) || by.set(k, []).get(k)).push(c.steady); });
+    return order.filter(k => by.has(k)).map(k => ({ name: k, error: Math.round(by.get(k).reduce((a, b) => a + b, 0) / by.get(k).length) }));
+  }
+
+  // The accuracy test: five targets across the screen, the user looks at and clicks each, and the
+  // result shows where the prediction landed against each target and the error per row and column.
+  // Returns { targets: [{ x, y, px, py, steady, frame }], rows, cols, error }, { redo: true } if the
+  // user asked to recalibrate, or null if cancelled or there is no model.
+  async function accuracyTest(gaze, { keepOpen = false, fullscreen = true } = {}) {
+    if (!gaze.model) return null;
+    show();
+    const k = await prompt('<p><b>Accuracy test</b></p><p>Five targets, one at a time: look at the centre, click it (or press Space) and keep looking until it disappears. The result shows how far off each one landed.</p><p class="gz-muted">Esc cancels.</p>');
+    if (k === 'escape') { if (!keepOpen) hide(); return null; }
+    if (fullscreen) await goFullscreen();
+    const targets = [[0.15, 0.12], [0.85, 0.12], [0.5, 0.5], [0.15, 0.88], [0.85, 0.88]].map(([a, b]) => ({ x: innerWidth * a, y: innerHeight * b }));
+    const got = [];
+    for (let i = 0; i < targets.length; i++) {
+      setMsg('Target ' + (i + 1) + ' of ' + targets.length, true);
+      const n = await showDot(gaze, targets[i], () => { const m = gaze.measure(); if (m) got.push(m); return m ? 9 : 0; }, { hold: 1200 });
+      if (n < 0) { if (!keepOpen) hide(); return null; }
+      if (n < 5) { setMsg('Lost your face on that one, again…', true); await sleep(700); i--; }
+    }
+    // draw each target, where the look landed and a line between them
+    clearMarks();
+    got.forEach((m, i) => {
+      const aim = Object.assign(document.createElement('div'), { className: 'gz-aim' });
+      aim.style.left = m.x + 'px'; aim.style.top = m.y + 'px';
+      aim.append(Object.assign(document.createElement('b'), { textContent: m.steady + ' px' }));
+      const hit = Object.assign(document.createElement('div'), { className: 'gz-hit' });
+      hit.style.left = m.px + 'px'; hit.style.top = m.py + 'px';
+      const line = Object.assign(document.createElement('div'), { className: 'gz-line' });
+      line.style.left = m.x + 'px'; line.style.top = m.y + 'px';
+      line.style.width = Math.hypot(m.px - m.x, m.py - m.y) + 'px';
+      line.style.transform = 'rotate(' + Math.atan2(m.py - m.y, m.px - m.x) + 'rad)';
+      root.append(line, aim, hit);
+    });
+    const error = Math.round(got.reduce((s, m) => s + m.steady, 0) / got.length);
+    const rows = byRow(got), cols = byRow(got, colName, ['left', 'centre', 'right']);
+    const lineH = 28;
+    const table = '<table><tr><th></th>' + rows.map(r => '<th>' + r.name + '</th>').join('') + '</tr><tr><td>by row</td>' + rows.map(r => '<td>' + r.error + ' px</td>').join('') + '</tr></table>' +
+      '<table><tr><th></th>' + cols.map(c => '<th>' + c.name + '</th>').join('') + '</tr><tr><td>by column</td>' + cols.map(c => '<td>' + c.error + ' px</td>').join('') + '</tr></table>';
+    const worst = [...got].sort((a, b) => b.steady - a.steady)[0];
+    const note = error < 80 ? 'Good: a held look lands within about ' + Math.max(1, Math.round(error / lineH)) + ' lines.' : error < 150 ? 'Usable: within ' + Math.round(error / lineH) + ' lines or so.' : 'Rough: recalibrate with the room lit from the front, sitting still.';
+    const r = await prompt('<p><b>Average miss: ' + error + ' px</b> <span class="gz-muted">(grey = target, blue = where the look landed)</span></p>' + table +
+      '<p>' + note + (worst && worst.steady > error * 1.6 && worst.steady > 100 ? ' The ' + rowName(worst.y) + ' ' + colName(worst.x) + ' target was the worst at ' + worst.steady + ' px.' : '') + '</p>' +
+      '<p class="gz-muted">Click to continue, press R to recalibrate, or Esc to cancel.</p>', ['r']);
+    clearMarks();
+    if (r === 'escape') { if (!keepOpen) hide(); return null; }
+    if (r === 'r') { if (!keepOpen) hide(); return { redo: true }; }
+    if (!keepOpen) hide();
+    return { targets: got, rows, cols, error };
   }
 
   // One copy of the calibration for every page on this site, so the standalone page and
@@ -185,5 +273,5 @@
     try { const m = gaze.exportModel(); if (m) localStorage.setItem(SHARED_KEY, JSON.stringify(m)); } catch (e) {}
   }
 
-  window.GazeCalibrate = { calibrate, quickFix, prompt, show, hide, goFullscreen, sleep };
+  window.GazeCalibrate = { calibrate, accuracyTest, quickFix, prompt, show, hide, goFullscreen, sleep };
 })();
