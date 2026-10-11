@@ -38,9 +38,11 @@
   #top { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
   #top .spacer { flex: 1; }
   #drift { color: var(--warn); display: none; }
-  #main { flex: 1; display: flex; gap: 16px; min-height: 0; padding: 10px 0 12px; }
-  #ref { flex: 0 0 58%; overflow: auto; padding: 8px 14px 40vh; background: var(--panel); border-radius: 10px; font-family: Georgia, "Times New Roman", serif; }
+  /* a wide empty gap between the reference and the writing box, so a gaze on one cannot be read as the other */
+  #main { flex: 1; display: flex; gap: 9vw; min-height: 0; padding: 10px 0 12px; }
+  #ref { flex: 0 0 50%; overflow: auto; padding: 8px 14px 40vh; background: var(--panel); border-radius: 10px; font-family: Georgia, "Times New Roman", serif; }
   #session.paper #ref { flex: 1; }
+  #session.paper #main { padding-bottom: 16vh; }   /* keeps the last line well above the paper on the desk */
   #ref p { margin: 0 0 1em; }
   #ref .sent { transition: filter .25s, opacity .25s; border-radius: 3px; }
   #session.blur #ref .sent.dim { filter: blur(5px); opacity: .55; }
@@ -302,6 +304,8 @@ function runSession(text) {
     panel: ref, sentences,
     holdMs: +$('holdMs').value || 600,
     ringR: (+$('ringPx').value || 90) / 2,
+    // the side facing the writing: the box on the right when typing, the desk below when on paper
+    inset: $('mode').value === 'paper' ? { bottom: 70 } : { right: 70 },
     onLook: () => { $('lookCount').textContent = mapper.log.length + ' lookup' + (mapper.log.length === 1 ? '' : 's'); mapper.paint(); },
     onRing: r => {
       lastHits.forEach(w => w.classList.remove('hit'));
@@ -322,6 +326,8 @@ function runSession(text) {
   clockTimer = setInterval(() => { $('clock').textContent = clock(elapsed()); $('fps').textContent = Math.round(gaze.fps) + ' fps'; }, 1000);
   let blurTick = 0;
   onGaze = s => {
+    // a keystroke in the last second means the eyes are on the writing, whatever the camera says
+    if (performance.now() - lastKeyAt < 1200) s = { ...s, x: null, y: null, fix: null, region: null, away: true };
     gazeDot.classList.toggle('away', s.x == null);
     if (s.x != null) {
       gazeDot.style.left = s.x + 'px'; gazeDot.style.top = s.y + 'px';
@@ -339,7 +345,10 @@ function runSession(text) {
   if ($('mode').value === 'typed') typed.focus();
 }
 
+let lastKeyAt = 0;
+typed.addEventListener('keydown', () => { lastKeyAt = performance.now(); });
 typed.addEventListener('input', () => {
+  lastKeyAt = performance.now();
   lastTyped = typed.value;
   mapper && mapper.setCursor(cursorFrom(typed.value));
 });

@@ -17,7 +17,7 @@
 (() => {
   const SIGMA_X = 160;   // px: horizontal gaze error is forgiven generously (sentences wrap anyway)
   const SIGMA_Y = 60;    // px: vertical error, two to three lines of text
-  const PANEL_PAD = 24;  // px: gaze this far outside the panel still counts as being in it
+  const PANEL_PAD = 24;  // px: once reading, gaze this far outside the panel still counts as being in it
   const LEAVE_MS = 900;  // gaze off the panel (or not settled) for this long ends a look
   const HOLD_MS = 600;   // default: the gaze has to settle in one place this long before it counts
   const ENTER_MS = 120;  // gaze must stay on the panel this long before it counts as reading
@@ -90,9 +90,11 @@
   }
 
   class LookupMapper {
-    constructor({ panel, sentences, onLook, onCurrent, onRing, holdMs = HOLD_MS, ringR = 45 }) {
+    constructor({ panel, sentences, onLook, onCurrent, onRing, holdMs = HOLD_MS, ringR = 45, inset = {} }) {
       this.panel = panel;
       this.sentences = sentences;
+      this.inset = inset;        // px per side (left/right/top/bottom) the gaze must be inside the panel to start a look:
+                                 // set on the side that faces the writing, so a glance near that edge is not reading
       this.holdMs = holdMs;
       this.ringR = ringR;        // px: radius of the gaze ring; words inside it collect time
       this.onRing = onRing || (() => {});   // ({ x, y, r, hits }) while settled on the panel, null otherwise
@@ -146,7 +148,11 @@
       if (this.paused) { this._leave(t, true); return -1; }
       if (!this.rects) this._measure();
       const pr = this.panelRect;
-      const inPanel = sample.x != null && !sample.away && !sample.edge && sample.x >= pr.left - PANEL_PAD && sample.x <= pr.right + PANEL_PAD && sample.y >= pr.top - PANEL_PAD && sample.y <= pr.bottom + PANEL_PAD;
+      // hysteresis: the gaze has to land well inside the panel to start counting, and only stops
+      // once it is clearly outside, so hovering near the edge between panel and page does nothing
+      const reading = this.enteredAt != null, ins = this.inset;
+      const edge = side => reading ? PANEL_PAD : -(ins[side] || 0);
+      const inPanel = sample.x != null && !sample.away && !sample.edge && sample.x >= pr.left - edge('left') && sample.x <= pr.right + edge('right') && sample.y >= pr.top - edge('top') && sample.y <= pr.bottom + edge('bottom');
 
       if (!inPanel) { this._leave(t, false); return -1; }
       // a brief pass through the panel (a saccade on the way elsewhere) is not reading, and

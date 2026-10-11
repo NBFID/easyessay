@@ -384,9 +384,10 @@
   #gazeBar label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
   #gazeDrift { color: #b45309; display: none; }
   #gazeDrift.on { display: inline; }
-  #blank.gaze #blankMain { display: flex; gap: 14px; height: calc(100vh - 230px); min-height: 320px; }
+  /* a wide empty gap between the reference and the page, so a gaze on one cannot be read as the other */
+  #blank.gaze #blankMain { display: flex; gap: 9vw; height: calc(100vh - 230px); min-height: 320px; }
   #blank.gaze #blankInput { flex: 1; min-width: 0; height: auto; min-height: 0; resize: none; }
-  #gazeRef { flex: 0 0 56%; overflow: auto; padding: 10px 16px 40vh; background: var(--soft); border-radius: 10px; font-family: Georgia, "Times New Roman", serif; font-size: 17px; line-height: 1.65; opacity: 0.85; }
+  #gazeRef { flex: 0 0 50%; overflow: auto; padding: 10px 16px 40vh; background: var(--soft); border-radius: 10px; font-family: Georgia, "Times New Roman", serif; font-size: 17px; line-height: 1.65; opacity: 0.85; }
   #gazeRef p { margin: 0 0 1em; }
   #gazeRef .ptitle { font: 600 13px/1.4 var(--ui); color: var(--muted); margin: 0 0 4px; text-transform: uppercase; letter-spacing: 0.04em; }
   #gazeRef .sent { transition: filter .25s, opacity .25s; border-radius: 3px; }
@@ -3008,7 +3009,9 @@ function openBlank(id) {
 blankTarget.addEventListener('change', loadDraft);
 
 // The attempt is kept as you type, so a reload doesn't lose forty minutes of writing
+blankInput.addEventListener('keydown', () => { if (gz) gz.lastKeyAt = performance.now(); });
 blankInput.addEventListener('input', () => {
+  if (gz) gz.lastKeyAt = performance.now();
   essay.draft = { id: blankTarget.value, text: blankInput.value };
   blankCount.textContent = wc(blankInput.value) + ' words';
   if (gz && gz.mapper) gz.mapper.setCursor(gz.cursorFrom(blankInput.value));
@@ -3179,6 +3182,8 @@ function gazeBlurUpdate(y, current) {
 // Every camera frame: feed the mapper, move the gaze dot, warn if the head has drifted
 function gazeSample(s) {
   if (!gz || gz.paused || gz.userPaused || !gz.mapper) return;
+  // a keystroke in the last second means the eyes are on the writing, whatever the camera says
+  if (performance.now() - (gz.lastKeyAt || 0) < 1200) s = { ...s, x: null, y: null, fix: null, region: null, away: true };
   gazeDot.classList.toggle('away', s.x == null);
   if (s.x != null) { gazeDot.style.left = s.x + 'px'; gazeDot.style.top = s.y + 'px'; gazeDot.classList.toggle('fix', !!s.fix); }
   gazeDrift.classList.toggle('on', s.drift > 1);
@@ -3237,6 +3242,7 @@ function gazeStart(t) {
   let lastHits = [];
   gz.mapper = new LookupMapper({ panel: gazeRef, sentences: gz.sents,
     holdMs: opts.gazeHold || 600, ringR: (opts.gazeRing || 90) / 2,
+    inset: { right: 70, bottom: 70 },   // the writing box sits to the right (below, on a narrow screen)
     onLook: () => { const n = gz.mapper.log.length; gazeLooks.textContent = n + (n === 1 ? ' lookup' : ' lookups'); gz.mapper.paint(); },
     onRing: r => {
       lastHits.forEach(w => w.classList.remove('hit'));

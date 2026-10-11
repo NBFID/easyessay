@@ -267,10 +267,10 @@
       // calibration dots, so reading the last lines never counts as looking down.
       const mx = 0.2 * W, my = 0.2 * H;
       const dPitch = this.model.head ? Math.abs(f.head[1] - this.model.head[1]) : 0;
-      const droop = this.model.earMin ? Math.min(0.2, this.model.earMin * 0.8) : 0.17;
+      const droop = this.model.earMin ? Math.min(0.2, this.model.earMin * 0.9) : 0.17;
       const recent = this.history.slice(-5);
       const qx = median(recent.map(p => p.x)), qy = median(recent.map(p => p.y));   // a shorter median: reacts in ~200 ms
-      const awayNow = qx < -mx || qx > W + mx || qy < -my || qy > H + my || f.ear < droop || dPitch > 0.3;
+      const awayNow = qx < -mx || qx > W + mx || qy < -my || qy > H + my || f.ear < droop || dPitch > 0.2;
       this.awayFrames = awayNow ? (this.awayFrames || 0) + 1 : 0;
       this.hereFrames = awayNow ? 0 : (this.hereFrames || 0) + 1;
       if (!this.away && this.awayFrames >= 3) this.away = true;
