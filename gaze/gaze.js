@@ -35,6 +35,8 @@
   const EYE_COLS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];   // the eyes alone
   const HEAD_COLS = [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27];     // eye×head cross terms, then the pose
   const HEAD_POSE = 22;   // first pose column (yaw, pitch, roll, tx, ty, tz)
+  const PURSUIT_LAG = 100;   // ms the eye trails a moving calibration target
+  const PURSUIT_BINS = 12;   // a pursuit sweep is held out in this many stretches
 
   // Smoothing and dwell tuning, exposed so a test can sweep them (see test/noise.js)
   const TUNE = {
@@ -48,6 +50,9 @@
     REGION_RESTART: 1.4,   // × REGION_R: a move this far restarts the dwell
     REGION_WX: 2.5,        // the restart distance is this many times wider sideways (reading sweeps along a line)
     REGION_RATE: 0.12,     // how fast the dwell centroid follows the gaze
+    FILTER: 'median',      // 'median' (median then average) or 'euro' (a One-Euro filter on the raw point)
+    EURO_MIN: 0.6,         // One-Euro: cutoff Hz when still (lower = steadier)
+    EURO_BETA: 0.004,      // One-Euro: how much a fast move opens the cutoff
   };
 
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -178,7 +183,17 @@
       if (f.blink) this.blinkCool = 4;
       else if (this.blinkCool > 0) this.blinkCool--;
       if (f.blink || this.blinkCool > 0) { this.onGaze({ t, x: null, y: null, fix: this.fix, region: this.region, blink: true, face: true, drift: this._drift(f) }); return; }
-      if (this.collecting) { this.collecting.rows.push(f.row); this.collecting.ears.push(f.ear); }
+      if (this.collecting) {
+        const c = this.collecting;
+        if (c.pursuit) {
+          // the eye trails a moving target by about a tenth of a second, so each frame is paired
+          // with where the target was then
+          const at = t - PURSUIT_LAG;
+          let k = c.path.length - 1;
+          while (k > 0 && c.path[k].t > at) k--;
+          if (c.path.length && c.path[k].t <= at + 40) { c.rows.push(f.row); c.ears.push(f.ear); c.tx.push(c.path[k].x); c.ty.push(c.path[k].y); }
+        } else { c.rows.push(f.row); c.ears.push(f.ear); }
+      }
       if (!this.model) { this.onGaze({ t, x: null, y: null, fix: null, blink: false, face: true, drift: 0 }); return; }
       const p = this._predict(f.row);
       this._emit(t, p.x, p.y, f);
@@ -332,7 +347,7 @@
         const s = this._scoreChecks(options[name]);
         errors[name] = Math.round(s.error);
         // a correction has to beat the plain fit by a clear margin before it is trusted
-        const need = name === 'none' ? 0 : 4;
+        const need = name === 'none' ? 0 : 3;
         if (!best || s.error + need < best.error) best = { name, ...s };
       }
       m.rbf = options[best.name];
@@ -341,6 +356,20 @@
       m.error = Math.round(best.error);
       this.history = []; this.smooth = null; this.fix = null; this.fixWin = [];
       return { chosen: best.name, errors, checks: best.checks };
+    }
+
+    // A click is a glimpse of the truth: the eyes are on what the hand clicks. If the recent
+    // prediction is near the click, a part of the gap becomes a bias correction, so the fit keeps
+    // tracking a slowly drifting posture. Returns the shift applied in px, or null.
+    nudge(x, y, { weight = 0.35, within = 320 } = {}) {
+      const m = this.model;
+      if (!m || this.history.length < 3) return null;
+      const h = this.history.slice(-5);
+      const px = median(h.map(p => p.x)), py = median(h.map(p => p.y));
+      const dx = x - px, dy = y - py;
+      if (Math.hypot(dx, dy) > within) return null;
+      m.bias = { x: (m.bias ? m.bias.x : 0) + dx * weight, y: (m.bias ? m.bias.y : 0) + dy * weight };
+      return { dx: Math.round(dx * weight), dy: Math.round(dy * weight) };
     }
 
     // One-dot drift correction: shift the model so its prediction for the samples just collected
@@ -379,7 +408,7 @@
       this.awayFrames = awayNow ? (this.awayFrames || 0) + 1 : 0;
       this.hereFrames = awayNow ? 0 : (this.hereFrames || 0) + 1;
       if (!this.away && this.awayFrames >= 3) this.away = true;
-      if (this.away && this.hereFrames >= 4) { this.away = false; this.history = this.history.slice(-3); this.smooth = null; this.fix = null; this.fixWin = []; }
+      if (this.away && this.hereFrames >= 4) { this.away = false; this.history = this.history.slice(-3); this.smooth = null; this.euro = null; this.fix = null; this.fixWin = []; }
       if (this.away) {
         this.fix = null; this.fixWin = []; this.region = null;
         this.onGaze({ t, x: null, y: null, fix: null, region: null, blink: false, face: true, away: true, drift: this._drift(f) });
@@ -388,7 +417,21 @@
       // Per-frame predictions are noisy (a couple of hundred px); a longer median and a slower
       // average trade a little lag for a much steadier point, which is fine for reading lines.
       let x = rawX, y = rawY;
-      if (!this.smooth) this.smooth = { x, y };
+      if (TUNE.FILTER === 'euro') {
+        // One-Euro: a low-pass whose cutoff rises with speed, so it is steady when still and
+        // quick on a saccade; fed the short median so a single wild frame cannot drag it
+        const dt = this.euroT ? Math.max(1, t - this.euroT) / 1000 : 1 / 30;
+        this.euroT = t;
+        const alpha = cutoff => { const te = 1 / (2 * Math.PI * cutoff); return 1 / (1 + te / dt); };
+        if (!this.euro) this.euro = { x: qx, y: qy, dx: 0, dy: 0 };
+        const e = this.euro, ad = alpha(1);
+        const vx = (qx - e.x) / dt, vy = (qy - e.y) / dt;
+        e.dx += ad * (vx - e.dx); e.dy += ad * (vy - e.dy);
+        const speed = Math.hypot(e.dx, e.dy);
+        const a = alpha(TUNE.EURO_MIN + TUNE.EURO_BETA * speed);
+        e.x += a * (qx - e.x); e.y += a * (qy - e.y);
+        this.smooth = { x: e.x, y: e.y };
+      } else if (!this.smooth) this.smooth = { x, y };
       else {
         const jump = Math.hypot(x - this.smooth.x, y - this.smooth.y);
         const a = jump > TUNE.JUMP ? TUNE.JUMP_A : TUNE.EMA_A;     // follow real saccades, settle slowly otherwise
@@ -443,14 +486,37 @@
 
     /* ---- calibration ---- */
 
-    // moving: the head is meant to move while this dot is looked at, so keep every frame
-    collect(x, y, { moving = false } = {}) { this.collecting = { x, y, rows: [], ears: [], moving }; }
+    // moving: the head is meant to move while this dot is looked at, so keep every frame.
+    // pursuit: the dot moves (the page reports its position with pursuitAt), and every frame is
+    // paired with the target's position a moment earlier.
+    collect(x, y, { moving = false, pursuit = false } = {}) { this.collecting = { x, y, rows: [], ears: [], moving, pursuit, path: [], tx: [], ty: [] }; }
+
+    // Where the pursuit target is now, from the page's animation loop
+    pursuitAt(x, y, t = performance.now()) {
+      const c = this.collecting;
+      if (!c || !c.pursuit) return;
+      c.x = x; c.y = y;
+      c.path.push({ t, x, y });
+      if (c.path.length > 60) c.path.shift();
+    }
 
     // Returns how many frames were kept for the dot
     stopCollecting() {
       const c = this.collecting;
       this.collecting = null;
       if (!c || c.rows.length < 5) return 0;
+      if (c.pursuit) {
+        // the sweep becomes a dozen pseudo-dots in time order, each with its own target per
+        // frame, so the leave-one-out can hold out a stretch of the path at a time
+        const bins = Math.max(1, Math.min(PURSUIT_BINS, Math.floor(c.rows.length / 12)));
+        const per = Math.ceil(c.rows.length / bins);
+        const ears = [...c.ears].sort((a, b) => a - b);
+        for (let b = 0; b < c.rows.length; b += per) {
+          const tx = c.tx.slice(b, b + per), ty = c.ty.slice(b, b + per);
+          this.points.push({ x: tx.reduce((s, v) => s + v, 0) / tx.length, y: ty.reduce((s, v) => s + v, 0) / ty.length, rows: c.rows.slice(b, b + per), tx, ty, pursuit: true, moving: false, ear: ears[Math.floor(ears.length * 0.1)] || 0.25 });
+        }
+        return c.rows.length;
+      }
       let keep = c.rows;
       if (!c.moving) {
         // drop the frames furthest from the dot's typical reading (a blink, a glance away)
@@ -483,10 +549,12 @@
       const Z = pts.map(p => p.rows.map(z));
       const all_idx = pts.map((_, i) => i);
       const predictWith = (w, r) => { let x = 0, y = 0; for (let i = 0; i < d; i++) { x += r[i] * w.wx[i]; y += r[i] * w.wy[i]; } return { x, y }; };
+      // the target of row n of dot k: the dot itself, or where a pursuit target was at that frame
+      const tgt = (k, n) => pts[k].tx ? { x: pts[k].tx[n], y: pts[k].ty[n] } : pts[k];
       // ridge on a subset of columns; the weights come back in full-row form (zeros elsewhere)
-      const fitCols = (idx, cols, lambda, target) => {
+      const fitCols = (idx, cols, lambda, target = tgt) => {
         const X = [], yx = [], yy = [];
-        idx.forEach(k => Z[k].forEach((r, n) => { X.push([1, ...cols.map(c => r[c])]); const ty = target ? target(k, n) : pts[k]; yx.push(ty.x); yy.push(ty.y); }));
+        idx.forEach(k => Z[k].forEach((r, n) => { X.push([1, ...cols.map(c => r[c])]); const ty = target(k, n); yx.push(ty.x); yy.push(ty.y); }));
         const sx = ridge(X, yx, lambda * X.length), sy = ridge(X, yy, lambda * X.length);
         const wx = new Float64Array(d), wy = new Float64Array(d);
         wx[0] = sx[0]; wy[0] = sy[0];
@@ -502,7 +570,7 @@
         let err = 0;
         for (const k of over) {
           const w = fit(k);
-          err += median(Z[k].map(r => { const p = predictWith(w, r); return Math.hypot(p.x - pts[k].x, p.y - pts[k].y); }));
+          err += median(Z[k].map((r, n) => { const p = predictWith(w, r), g = tgt(k, n); return Math.hypot(p.x - g.x, p.y - g.y); }));
         }
         return err / over.length;
       };
@@ -518,7 +586,7 @@
       // dots out (every dot, moving ones included) says it helps.
       let headFit = null;
       if (movingIdx.length) {
-        const residOf = we => (k, n) => { const p = predictWith(we, Z[k][n]); return { x: pts[k].x - p.x, y: pts[k].y - p.y }; };
+        const residOf = we => (k, n) => { const p = predictWith(we, Z[k][n]), g = tgt(k, n); return { x: g.x - p.x, y: g.y - p.y }; };
         const eyeFits = all_idx.map(k => fitCols(eyeIdx.filter(i => i !== k), EYE_COLS, best.lambda));   // one stage-one fit per held-out dot
         const without = looErrOn(all_idx, k => eyeFits[k]);
         let bestH = null;
@@ -528,9 +596,10 @@
         }
         if (bestH.err < without) { headFit = bestH; w = add(w, fitCols(all_idx, HEAD_COLS, bestH.lambda, residOf(w))); best = { lambda: best.lambda, err: bestH.err }; }
       }
-      // the resting head pose, for the drift warning: only the dots looked at with a still head
-      const still = pts.filter(p => !p.moving);
-      const headRows = still.flatMap(p => p.rows).map(r => r.slice(-6));
+      // the resting head pose, for the drift warning: only the dots looked at with a still head.
+      // The local correction is centred on the real dots only (a pursuit stretch is smeared).
+      const still = pts.filter(p => !p.moving && !p.pursuit);
+      const headRows = pts.filter(p => !p.moving).flatMap(p => p.rows).map(r => r.slice(-6));
       const head = headRows[0].map((_, j) => headRows.reduce((s, r) => s + r[j], 0) / headRows.length);
       const headScale = Math.max(1, Math.abs(head[5]) * 0.08);   // a few percent of the distance to the camera
       // the range of head poses the calibration covered (widened a little): predictions outside it are clamped
@@ -557,7 +626,7 @@
       this.model.correction = opts.both ? 'both' : 'none';
       this.checks = [];
       this.history = []; this.smooth = null; this.fix = null; this.fixWin = [];
-      return { error: Math.round(best.err), lambda: best.lambda, points: pts.length, headFit: !!headFit };
+      return { error: Math.round(best.err), lambda: best.lambda, points: pts.length, pursuit: pts.filter(p => p.pursuit).length, headFit: !!headFit };
     }
 
     // Error against a check dot, from the samples collected for it: `steady` is the error of the

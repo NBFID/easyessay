@@ -419,7 +419,7 @@
   .gz-pick .t0 { width: auto; padding: 0 8px; }
   .gz-marking .w { cursor: pointer; }
   `;
-  function attachMarking(mapper, panel, { onChange = () => {}, onBusy = () => {} } = {}) {
+  function attachMarking(mapper, panel, { onChange = () => {}, onBusy = () => {}, onClick = null } = {}) {
     if (!document.getElementById('gz-pick-css')) document.head.appendChild(Object.assign(document.createElement('style'), { id: 'gz-pick-css', textContent: PICK_CSS }));
     panel.classList.add('gz-marking');
     const pick = document.createElement('div');

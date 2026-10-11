@@ -20,7 +20,7 @@ function features(x, y, head, R) {
   return { row, ear: 0.3 - 0.1 * ny };
 }
 
-function run({ glare = 0, seed = 1 } = {}) {
+function run({ glare = 0, seed = 1, pursuit = true } = {}) {
   const R = rng(seed);
   const g = new GazeTracker({ video: {} });
   const rest = [0.02, -0.05, 0.01, 1, -2, -45];
@@ -36,6 +36,21 @@ function run({ glare = 0, seed = 1 } = {}) {
   };
   const inset = 0.07;
   for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) collect(W * (inset + (1 - 2 * inset) * i / 3), H * (inset + (1 - 2 * inset) * j / 3), j === 0 || j === 3 ? 45 : 33, false);
+  // a pursuit sweep: the target glides along a Lissajous figure, the eye trails it by 100 ms
+  if (pursuit) {
+    g.collect(W / 2, H / 2, { pursuit: true });
+    for (let i = 0; i < 360; i++) {
+      const t = i * 33, ph = t / 1000 * 2 * Math.PI, ease = Math.min(1, i / 90);
+      const x = W / 2 + W * 0.42 * ease * Math.sin(3 * ph / 4.2), y = H / 2 + H * 0.4 * ease * Math.sin(2 * ph / 4.2 + 1);
+      g.pursuitAt(x, y, t);
+      const seen = g.collecting.path.find(p => p.t >= t - 100) || g.collecting.path[0];   // where the eye actually is: a tenth of a second behind
+      const f = features(seen.x, seen.y, rest.map((v, j) => v + R.g() * (j < 3 ? 0.004 : 0.2)), R);
+      // the same pairing _tick does
+      const c = g.collecting, at = t - 100; let k = c.path.length - 1; while (k > 0 && c.path[k].t > at) k--;
+      if (c.path[k].t <= at + 40) { c.rows.push(f.row); c.ears.push(f.ear); c.tx.push(c.path[k].x); c.ty.push(c.path[k].y); }
+    }
+    g.stopCollecting();
+  }
   [[0.5, 0.5], [0.2, 0.25], [0.8, 0.75]].forEach(([a, b]) => collect(W * a, H * b, 150, true));
   const fit = g.fit();
   const checks = [[0.3, 0.14], [0.7, 0.14], [0.5, 0.5], [0.3, 0.86], [0.7, 0.86]];
@@ -49,9 +64,9 @@ function run({ glare = 0, seed = 1 } = {}) {
   return { fit, live: live.map(c => c.steady), pick, moved: at(W * 0.6, H * 0.4, turned), outOfRange: at(W * 0.6, H * 0.4, far), drift: Math.round(g._drift({ head: far }) * 10) / 10 };
 }
 
-for (const glare of [0, 0.01, 0.03]) {
-  const r = run({ glare });
-  console.log('glare ' + glare + ':', 'fit loo ' + r.fit.error + ' px, head terms ' + (r.fit.headFit ? 'kept' : 'dropped') + ';',
+for (const [glare, pursuit] of [[0, false], [0, true], [0.01, true], [0.03, true]]) {
+  const r = run({ glare, pursuit });
+  console.log('glare ' + glare + (pursuit ? ' + pursuit' : ' dots only') + ':', 'pursuit bins ' + r.fit.pursuit + ';', 'fit loo ' + r.fit.error + ' px, head terms ' + (r.fit.headFit ? 'kept' : 'dropped') + ';',
     'checks before choice ' + r.live.join('/') + ';', 'chosen ' + r.pick.chosen, JSON.stringify(r.pick.errors) + ';',
     'per check ' + r.pick.checks.map(c => c.steady).join('/') + ';', 'head turned 5° → ' + r.moved + ' px; 30° (out of range, clamped) → ' + r.outOfRange + ' px, drift ' + r.drift);
 }

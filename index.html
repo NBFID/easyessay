@@ -387,7 +387,7 @@
   /* a wide empty gap between the reference and the page, so a gaze on one cannot be read as the other */
   #blank.gaze #blankMain { display: flex; gap: 9vw; height: calc(100vh - 230px); min-height: 320px; }
   #blank.gaze #blankInput { flex: 1; min-width: 0; height: auto; min-height: 0; resize: none; }
-  #gazeRef { flex: 0 0 50%; overflow: auto; padding: 10px 16px 40vh; background: var(--soft); border-radius: 10px; font-family: Georgia, "Times New Roman", serif; font-size: 17px; line-height: 1.65; opacity: 0.85; }
+  #gazeRef { flex: 0 0 50%; overflow: auto; padding: 10px 16px 40vh; background: var(--soft); border-radius: 10px; font-family: Georgia, "Times New Roman", serif; font-size: 17px; line-height: 2.1; opacity: 0.85; }   /* wide line spacing: lines sit further apart than the camera's typical error */
   #gazeRef p { margin: 0 0 1em; }
   #gazeRef .ptitle { font: 600 13px/1.4 var(--ui); color: var(--muted); margin: 0 0 4px; text-transform: uppercase; letter-spacing: 0.04em; }
   #gazeRef .sent { transition: filter .25s, opacity .25s; border-radius: 3px; }
@@ -3140,7 +3140,7 @@ blankCheck.addEventListener('click', () => {
 let gz = null;          // during a session: { loading, target, sents, mapper, cursorFrom, started, timer, blurAt, paused }
 let gzTracker = null;   // the camera and face model, kept until the mode is left
 const GAZE_FILES = ['gaze/gaze.js', 'gaze/lookups.js', 'gaze/calibrate.js'];
-const GAZE_LINE = 17 * 1.65;   // px: the reference panel's line height (see #gazeRef)
+const GAZE_LINE = 17 * 2.1;    // px: the reference panel's line height (see #gazeRef)
 const gazeClockText = ms => { const s = Math.round(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 
 function loadScript(src) {
@@ -3325,7 +3325,7 @@ function gazeStart(t) {
       gazeRing.classList.toggle('on', !!r);
     } });
   // marking by hand: click a word, drag across words or right-click for the colour picker
-  gz.marking = attachMarking(gz.mapper, gazeRef, { onChange: gazeCount });
+  gz.marking = attachMarking(gz.mapper, gazeRef, { onChange: gazeCount, onClick: (x, y) => { if (gzTracker && gzTracker.nudge) gzTracker.nudge(x, y); } });
   gz.mapper.setCursor(gz.cursorFrom(blankInput.value));
   gz.started = performance.now();
   gz.blurAt = 0;

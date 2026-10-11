@@ -106,6 +106,39 @@
     return n;
   }
 
+  // The pursuit sweep: a 3:2 Lissajous figure covering most of the screen, eased in from the
+  // centre. Returns the frames collected, or -1 on Escape.
+  function pursuit(gaze, ms) {
+    return new Promise(resolve => {
+      const W = innerWidth, H = innerHeight, ax = W * 0.42, ay = H * 0.40;
+      setMsg('Follow the dot…', true);
+      dot.classList.remove('gz-hold');
+      dot.style.display = 'block';
+      dot.style.left = W / 2 + 'px'; dot.style.top = H / 2 + 'px';
+      let stop = false;
+      const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); stop = true; } };
+      addEventListener('keydown', onKey);
+      const t0 = performance.now();
+      gaze.collect(W / 2, H / 2, { pursuit: true });
+      const step = () => {
+        const now = performance.now(), u = (now - t0) / ms;
+        if (stop || u >= 1) {
+          removeEventListener('keydown', onKey);
+          dot.style.display = 'none';
+          const n = stop ? (gaze.collecting = null, -1) : gaze.stopCollecting();
+          return resolve(n);
+        }
+        const ease = Math.min(1, u * 4);                 // grow out from the centre over the first quarter
+        const ph = u * ms / 1000 * 2 * Math.PI;
+        const x = W / 2 + ax * ease * Math.sin(3 * ph / 4.2), y = H / 2 + ay * ease * Math.sin(2 * ph / 4.2 + Math.PI / 3);
+        dot.style.left = x + 'px'; dot.style.top = y + 'px';
+        gaze.pursuitAt(x, y, now);
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    });
+  }
+
   // One centre dot to re-centre the model after shifting in the chair: about two seconds.
   // Returns the correction applied in px, or null if cancelled.
   async function quickFix(gaze) {
@@ -157,6 +190,16 @@
       const n = await showDot(gaze, pts[i], () => gaze.stopCollecting(), { hold: edgeRow ? 1600 : 1100 });
       if (n < 0) { hide(); return null; }
       if (n < 5) { setMsg('Lost your face on that one, again…', true); await sleep(700); i--; }
+    }
+    // Smooth pursuit: a dot that glides around the screen for a dozen seconds, so the fit sees the
+    // eyes at hundreds of positions between the grid points rather than sixteen. Each frame is
+    // paired with where the dot was a tenth of a second earlier, since the eye trails it.
+    {
+      const k = await prompt('<p><b>Now follow the dot</b></p><p>It will glide around the screen for about twelve seconds. Keep your eyes on it the whole way, head still.</p><p class="gz-muted">Click when ready.</p>');
+      if (k === 'escape') { hide(); return null; }
+      const n = await pursuit(gaze, 12000);
+      if (n < 0) { hide(); return null; }
+      if (n < 60) { setMsg('Lost your face for most of that; carrying on with the dots alone', true); await sleep(1200); }
     }
     // Head movement: the same dot looked at while the head drifts about, so the fit learns how a
     // moved or turned head changes what the eyes have to do. Without this, any shift in the chair

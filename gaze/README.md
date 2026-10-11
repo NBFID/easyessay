@@ -26,9 +26,12 @@ then open http://localhost:8787/gaze/
    how many words wide the gaze highlight is (six by default).
 2. **Calibration.** The app goes fullscreen. Sixteen dots appear one at a time: look at the dot,
    click it (or press Space) and keep looking until it disappears. The top and bottom rows are
-   held a little longer, because that is where a webcam fit is weakest. Then three dots are
-   looked at while you slowly move your head about (left, right, up, down, closer, further) so
-   the fit learns how a moved head changes things. Five more dots check the fit, two on the top
+   held a little longer, because that is where a webcam fit is weakest. Then a dot glides around
+   the screen for twelve seconds and you follow it with your eyes (smooth pursuit: hundreds of
+   positions between the grid points, which the published webcam trackers found to be the most
+   effective calibration). Then three dots are looked at while you slowly move your head about
+   (left, right, up, down, closer, further) so the fit learns how a moved head changes things.
+   Five more dots check the fit, two on the top
    row, one in the middle and two on the bottom, and the verdict reports the error overall and
    per row, and which local correction the check dots chose (fitted from both eyes together,
    per eye, or none). Under about 80 px is good; over 150 px, redo it with the room lit from the
@@ -47,7 +50,9 @@ then open http://localhost:8787/gaze/
    you can mark the reference yourself: click a word to step its colour (yellow, orange, red,
    then clear), drag across words or right-click one for a picker with the three colours and
    clear, or make a selection and press 1, 2 or 3 for the colour and 0 to clear. A hand mark
-   counts in the report like a look of that strength.
+   counts in the report like a look of that strength. A click on a word also tells the tracker
+   where your eyes are, and nudges its centring a little if the prediction was close, so a
+   slowly shifting posture is corrected as you go.
    The top bar has **Pause** (the camera is ignored until you resume), **Undo look** (takes back
    the last lookup, for when you glanced at it by accident), **Reset** (clears every lookup),
    **Quick fix** (one dot, two seconds, re-centres the tracking after you have shifted in your
@@ -95,7 +100,43 @@ the page add hand marks the same way.
 
 Limits worth knowing: accuracy depends on lighting, glasses glare and keeping still; it cannot
 tell which word in a sentence you needed beyond the oval's width; and if you move the window or
-yourself much, recalibrate.
+yourself much, recalibrate. The reference is set with wide line spacing (2.1) on purpose: the
+lines then sit further apart than the camera's typical vertical error, which is the cheapest
+accuracy win there is for a reading task.
+
+### Where the accuracy comes from, and what is left
+
+Published webcam trackers land in the same place as this one: a per-person calibration plus a
+regression on landmark features gives roughly one to three degrees in a controlled setting,
+worse in the wild, and the vertical axis is always the weak one. The pieces here that the
+literature backs: a smooth-pursuit calibration stage (the kiosk study and the FaceMesh plus
+kernel-ridge reference pipeline both found a moving target the most effective calibration),
+head pose as a correction term fitted from deliberate head movement (the 2024 iris-tracking
+paper's re-calibration, the 2026 landmark tracker's pose head), clicks as truth samples
+(WebGazer's self-calibration, tgaze's click drift correction), a dispersion-based fixation test
+with a minimum duration (the WebQAmGaze reading corpus), and a sticky line choice with a
+"stay, advance, regress" prior (the confidence-based line assignment work, which puts stay at
+about 0.85).
+
+What is still on the table, in order of likely payoff: an eye-image patch alongside the
+landmarks (tgaze adds a 48×32 CLAHE crop per eye reduced to 16 PCA components, and reports
+far fewer off-screen jumps), a kernel ridge regression on the pursuit samples as a third model
+variant for the check dots to choose from, a lightweight appearance model with few-shot
+personalisation (WebEyeTrack's BlazeGaze is 670 KB and adapts from nine samples), and a
+one-dot validation at Finish so the report can say how far the calibration drifted. The
+One-Euro filter the others use is in here as an option (`GazeTracker.TUNE.FILTER = 'euro'`);
+on the noise test it settles a little faster but flaps twice as often, so the median plus
+average stays the default.
+
+Sources: [tgaze](https://github.com/taru104/tgaze),
+[WebGazer](https://webgazer.cs.brown.edu/) and its [paper](https://jeffhuang.com/papers/WebGazer_IJCAI16.pdf),
+[Measuring browser webcam gaze honestly](https://arxiv.org/abs/2608.11566),
+[EMC-Gaze session-wise meta-calibration](https://arxiv.org/abs/2603.12388),
+[WebEyeTrack](https://arxiv.org/abs/2508.19544),
+[iris tracking with real-time re-calibration](https://ui.adsabs.harvard.edu/abs/2024IEEEA..12p8256C/abstract),
+[webcam tracking for large screens](https://link.springer.com/article/10.1007/s11042-026-21208-7),
+[WebQAmGaze](https://arxiv.org/abs/2303.17876),
+[confidence-based line assignment](https://arxiv.org/abs/2605.00033).
 
 `calibrate.js` (`GazeCalibrate`) is the calibration overlay: it adds its own full-screen layer
 and styles to whatever page loads it, runs the sixteen fitting dots, the three head-movement dots

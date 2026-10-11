@@ -379,8 +379,8 @@ function runSession(text) {
   sentences = splitEssay(text);
   renderRef(ref, sentences);
   ref.style.fontSize = $('fontPx').value + 'px';
-  ref.style.lineHeight = '1.65';
-  lineH = parseFloat($('fontPx').value) * 1.65;
+  ref.style.lineHeight = '2.1';   // wide line spacing: lines sit further apart than the camera's typical error
+  lineH = parseFloat($('fontPx').value) * 2.1;
   session.classList.toggle('paper', $('mode').value === 'paper');
   session.classList.toggle('blur', $('blurOpt').checked);
   gazeDot.classList.toggle('on', $('dotOpt').checked);
@@ -409,7 +409,7 @@ function runSession(text) {
     },
   });
   // marking by hand: click a word, drag across words or right-click for the colour picker
-  marking = attachMarking(mapper, ref, { onChange: () => { $('lookCount').textContent = mapper.log.length + ' lookup' + (mapper.log.length === 1 ? '' : 's') + (mapper.manual ? ' + marks' : ''); } });
+  marking = attachMarking(mapper, ref, { onChange: () => { $('lookCount').textContent = mapper.log.length + ' lookup' + (mapper.log.length === 1 ? '' : 's') + (mapper.manual ? ' + marks' : ''); }, onClick: (x, y) => gaze.nudge(x, y) });
   paused = false;
   pausedMs = 0;
   $('pauseBtn').textContent = 'Pause';

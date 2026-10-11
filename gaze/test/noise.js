@@ -121,6 +121,8 @@ if (mode === 'trace') {
     ['PRIOR_SD 2', {}, { PRIOR_SD: 2 }], ['PRIOR_SD 6', {}, { PRIOR_SD: 6 }],
     ['STICK 0', {}, { STICK: 0 }], ['STICK 0.3', {}, { STICK: 0.3 }], ['STICK 1', {}, { STICK: 1 }],
     ['MIN_LOOK 180', {}, { MIN_LOOK: 180 }], ['MIN_LOOK 450', {}, { MIN_LOOK: 450 }],
+    ['euro .6/.004', { FILTER: 'euro' }], ['euro .3/.004', { FILTER: 'euro', EURO_MIN: 0.3 }], ['euro 1/.004', { FILTER: 'euro', EURO_MIN: 1 }],
+    ['euro .6/.001', { FILTER: 'euro', EURO_BETA: 0.001 }], ['euro .6/.01', { FILTER: 'euro', EURO_BETA: 0.01 }], ['euro .4/.002', { FILTER: 'euro', EURO_MIN: 0.4, EURO_BETA: 0.002 }],
   ];
 
   for (const [name, tune, ltune = {}] of trials) {
